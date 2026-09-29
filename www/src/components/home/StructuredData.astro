@@ -1,0 +1,44 @@
+---
+import poster from '@/assets/hero-poster.jpg'
+import JsonLd from '@/components/head/JsonLd.astro'
+import { VIDEO } from '@/lib/hero'
+import { absolute } from '@/lib/seo'
+import { SITE } from '@/lib/site'
+
+// Structured data for search engines: the site, the game, and the home
+// page's loop as its trailer.
+const home = absolute('/')
+const data = {
+  '@graph': [
+    { '@type': 'WebSite', '@id': `${home}/#website`, name: SITE.name, url: home, inLanguage: 'en-GB' },
+    {
+      '@type': 'VideoGame',
+      '@id': `${home}/#game`,
+      name: SITE.name,
+      url: home,
+      description: SITE.description,
+      image: absolute(SITE.card.url),
+      genre: ['Vehicular combat', 'Action'],
+      gamePlatform: 'Web browser',
+      applicationCategory: 'Game',
+      operatingSystem: 'Any desktop browser with WebGL 2',
+      // practice against bots, or online matches of up to eight machines
+      playMode: ['SinglePlayer', 'MultiPlayer'],
+      numberOfPlayers: { '@type': 'QuantitativeValue', minValue: 1, maxValue: 8 },
+      inLanguage: 'en-GB',
+      offers: { '@type': 'Offer', price: 0, priceCurrency: 'USD' },
+      trailer: {
+        '@type': 'VideoObject',
+        name: 'Scrapyard gameplay: Team Deathmatch in The City',
+        description: 'A war rig with a roof minigun fighting a red crew through the streets of The City.',
+        thumbnailUrl: absolute(poster.src),
+        contentUrl: absolute(VIDEO.mp4),
+        uploadDate: VIDEO.uploaded,
+        duration: 'PT10S',
+      },
+    },
+  ],
+}
+---
+
+<JsonLd data={data} />

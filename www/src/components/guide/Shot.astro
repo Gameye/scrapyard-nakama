@@ -1,0 +1,19 @@
+---
+import type { ImageMetadata } from 'astro'
+import { Picture } from 'astro:assets'
+import { blurStyle } from '@/lib/blur'
+
+interface Props {
+  src: ImageMetadata
+  alt: string
+  sizes: string // how wide it shows, as the <img> sizes attribute says it
+  class?: string
+}
+
+// A screenshot in the guide: AVIF or WebP at the width the screen needs, over
+// a blurred copy of itself while it loads.
+const { src, alt, sizes, class: className } = Astro.props
+const widths = [...new Set([640, 828, src.width])].filter((width) => width <= src.width)
+---
+
+<Picture src={src} alt={alt} sizes={sizes} widths={widths} formats={['avif', 'webp']} class={className} style={await blurStyle(src)} />

@@ -1,0 +1,38 @@
+{
+  "name": "scrapyard",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "oxlint",
+    "check": "node src/game/ai.check.ts && node src/game/bots.check.ts && node src/game/ffa/ffa.check.ts && node src/game/tdm/tdm.check.ts && node src/game/simulation.check.ts && node src/game/loading.check.ts && node src/net/protocol.check.ts && node server/matchmaker.check.ts && npm run server:check",
+    "preview": "vite preview",
+    "server": "npm run server:build && node dist-server/main.js",
+    "server:build": "vite build --config vite.server.config.ts",
+    "server:check": "npm run server:build && node --expose-gc dist-server/arena.check.js && node dist-server/server.check.js && node dist-server/client.check.js && node dist-server/netplay.check.js"
+  },
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.20.0",
+    "@heroiclabs/nakama-js": "^2.8.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "three": "^0.186.0",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@types/three": "^0.186.0",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^6.1.1",
+    "oxlint": "^1.81.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~6.0.2",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.2"
+  }
+}

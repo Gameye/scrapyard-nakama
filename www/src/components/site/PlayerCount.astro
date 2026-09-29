@@ -1,0 +1,46 @@
+---
+// Live counts: players with the game open, and accounts. The chip holds its
+// space from the first paint, so nothing below moves when the counts arrive;
+// it stays see-through for zeros and while the server can't be reached. The
+// script fills every chip on the page.
+---
+
+<p
+  data-player-count
+  class="label inline-flex h-8 w-fit items-center gap-3 rounded border border-line bg-panel/60 px-3 text-neutral-400 tabular-nums opacity-0 backdrop-blur-sm transition-opacity duration-700"
+>
+  {/* the status light: green and pulsing while someone plays, grey when nobody does */}
+  <span aria-hidden="true" class="relative flex size-2">
+    <span data-when="active" class="absolute inset-0 rounded-full bg-emerald-400 motion-safe:animate-ping" hidden></span>
+    <span data-light class="relative size-2 rounded-full bg-neutral-600"></span>
+  </span>
+  <span data-when="active" hidden><span data-count="active" class="text-ink"></span> playing now</span>
+  <span data-when="both" class="sr-only" hidden>,</span>
+  <span data-when="both" aria-hidden="true" class="size-1 rotate-45 bg-neutral-600" hidden></span>
+  <span data-when="registered" hidden><span data-count="registered" class="text-ink"></span> registered</span>
+</p>
+
+<script>
+  import { watchStats, type Stats } from '@/lib/stats'
+
+  const count = new Intl.NumberFormat('en', { notation: 'compact' })
+
+  // Each part shows when its data-when holds; each data-count gets its number.
+  function show(stats: Stats) {
+    const active = stats.active > 0
+    const registered = stats.registered > 0
+    const when: Record<string, boolean> = { active, registered, both: active && registered }
+    for (const chip of document.querySelectorAll<HTMLElement>('[data-player-count]')) {
+      for (const part of chip.querySelectorAll<HTMLElement>('[data-when]')) part.hidden = !when[part.dataset.when!]
+      for (const number of chip.querySelectorAll<HTMLElement>('[data-count]')) {
+        number.textContent = count.format(stats[number.dataset.count as keyof Stats])
+      }
+      const light = chip.querySelector('[data-light]')!
+      light.classList.toggle('bg-emerald-400', active)
+      light.classList.toggle('bg-neutral-600', !active)
+      chip.classList.toggle('opacity-0', !active && !registered)
+    }
+  }
+
+  watchStats(show)
+</script>

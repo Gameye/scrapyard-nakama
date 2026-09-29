@@ -1,0 +1,27 @@
+---
+import { Picture } from 'astro:assets'
+import poster from '@/assets/hero-poster.jpg'
+import { blurStyle } from '@/lib/blur'
+import { VIDEO } from '@/lib/hero'
+
+// Behind the home page's words: the still (first paint, phones, reduced
+// motion), the gameplay loop over it, and a shade that keeps the words legible.
+// It fills the nearest positioned parent.
+---
+
+<Picture
+  src={poster}
+  alt=""
+  widths={[640, 960, poster.width]}
+  sizes="100vw"
+  formats={['avif', 'webp']}
+  loading="eager"
+  fetchpriority="high"
+  class="absolute inset-0 -z-30 h-full w-full object-cover"
+  style={await blurStyle(poster)}
+/>
+<video aria-hidden="true" autoplay muted loop playsinline disablepictureinpicture class="absolute inset-0 -z-20 h-full w-full object-cover motion-reduce:hidden">
+  <source src={VIDEO.webm} type='video/webm; codecs="av01.0.04M.08"' media="(min-width: 768px)" />
+  <source src={VIDEO.mp4} type="video/mp4" media="(min-width: 768px)" />
+</video>
+<div aria-hidden="true" class="absolute inset-0 -z-10 bg-gradient-to-r from-black/90 via-black/55 to-black/10"></div>

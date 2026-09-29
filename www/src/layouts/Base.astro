@@ -1,0 +1,22 @@
+---
+import Head from '@/components/head/Head.astro'
+import type { PageMeta } from '@/lib/seo'
+import '@/styles/global.css'
+
+type Props = PageMeta
+
+// Every page's frame: the head, a skip link for keyboard users, the page.
+---
+
+<!doctype html>
+<html lang="en-GB">
+  <head>
+    <Head {...Astro.props} />
+  </head>
+  <body>
+    <a href="#main" class="label fixed top-3 left-3 z-50 -translate-y-20 rounded bg-red-600 px-3 py-2 text-white focus:translate-y-0">
+      Skip to content
+    </a>
+    <slot />
+  </body>
+</html>

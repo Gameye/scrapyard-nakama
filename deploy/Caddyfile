@@ -1,0 +1,68 @@
+# TLS for both names; certificates come by themselves once DNS points here.
+# A bare IP or a name without public DNS: add `tls internal` to each block.
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+}
+
+# The site: the static files CI builds (www/dist, the game inside at /play),
+# in the release scripts/deploy.sh last switched to. /docs/modes is
+# docs/modes.html; .br and .gz copies sit next to the text files.
+(site_files) {
+	root * /srv/site/current
+	file_server {
+		precompressed br gzip
+	}
+}
+
+{$SITE_DOMAIN} {
+	import security_headers
+	header X-Frame-Options "DENY"
+
+	# The player counts: Nakama's get_stats RPC (nakama/data/modules/stats.lua)
+	# with the HTTP key, which never leaves the server. That one RPC, GET only.
+	@stats {
+		method GET
+		path /api/stats
+	}
+	handle @stats {
+		rewrite * /v2/rpc/get_stats?http_key={$NAKAMA_HTTP_KEY}&unwrap
+		reverse_proxy nakama:7350
+	}
+
+	# Online matches: the game server's socket, on the site's own origin (the
+	# game at /play connects here; wss on the site's certificate, no CORS).
+	# WebSocket upgrades pass through.
+	handle /match {
+		reverse_proxy game:7360
+	}
+
+	handle {
+		# one URL per page, as the canonical links name it: /docs/ -> /docs
+		@slash path_regexp slash ^(.+)/$
+		redir @slash {re.slash.1}{?query} 308
+
+		# hashed or versioned names are kept for good; the rest is checked on
+		# each visit (304 when unchanged). `?`: only where nothing set one.
+		@forever path /_astro/* /play/assets/* /video/*
+		header @forever Cache-Control "public, max-age=31536000, immutable"
+		header ?Cache-Control "no-cache"
+
+		try_files {path} {path}.html {path}/index.html
+		import site_files
+	}
+
+	handle_errors 404 {
+		rewrite * /404.html
+		import site_files
+	}
+}
+
+# Nakama's HTTP API and realtime socket (WebSocket upgrades pass through).
+{$API_DOMAIN} {
+	import security_headers
+	reverse_proxy nakama:7350
+}

@@ -1,0 +1,33 @@
+---
+import { GUIDE } from '@/lib/guide'
+
+interface Props {
+  current: string // the open page's href
+}
+
+// The guide's contents: a sidebar on wide screens, a wrapped row above the
+// page on narrow ones. The open page is marked like the game's menu choice.
+const { current } = Astro.props
+---
+
+<nav aria-label="Guide" class="lg:sticky lg:top-8 lg:self-start">
+  <p class="label text-neutral-400">Guide</p>
+  <ul class="mt-4 flex flex-wrap gap-x-5 gap-y-2 lg:flex-col lg:gap-y-1">
+    {
+      GUIDE.map(({ href, title }) => (
+        <li>
+          <a
+            href={href}
+            aria-current={href === current ? 'page' : undefined}
+            class:list={[
+              'flex items-center gap-3 py-1 text-sm lg:border-l-2 lg:pl-4',
+              href === current ? 'font-semibold text-white lg:border-red-500' : 'text-neutral-400 hover:text-ink lg:border-transparent',
+            ]}
+          >
+            {title}
+          </a>
+        </li>
+      ))
+    }
+  </ul>
+</nav>

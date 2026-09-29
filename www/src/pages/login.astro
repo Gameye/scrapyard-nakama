@@ -1,0 +1,16 @@
+---
+import { LoginForm } from '@/islands/forms/LoginForm'
+import Site from '@/layouts/Site.astro'
+---
+
+<Site title="Log in" description="Log in to your Scrapyard account." path="/login" index={false}>
+  <div class="mx-auto w-full max-w-md px-4 py-16 sm:py-24">
+    <h1 class="font-display text-4xl font-semibold">Log in</h1>
+    <p class="mt-3 text-neutral-400">
+      No account?{' '}
+      <a href="/register" class="text-link">Create one</a>, or{' '}
+      <a href="/play" class="text-link">play as a guest</a>.
+    </p>
+    <LoginForm client:load />
+  </div>
+</Site>

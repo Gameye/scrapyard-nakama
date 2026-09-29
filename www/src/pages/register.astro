@@ -1,0 +1,17 @@
+---
+import { RegisterForm } from '@/islands/forms/RegisterForm'
+import Site from '@/layouts/Site.astro'
+
+const description = 'Create a free Scrapyard account to keep one name on every browser you play from.'
+---
+
+<Site title="Create an account" description={description} path="/register" index={false}>
+  <div class="mx-auto w-full max-w-md px-4 py-16 sm:py-24">
+    <h1 class="font-display text-4xl font-semibold">Create an account</h1>
+    <p class="mt-3 leading-7 text-neutral-400">
+      One name on every browser you play from. Already have one?{' '}
+      <a href="/login" class="text-link">Log in</a>.
+    </p>
+    <RegisterForm client:load />
+  </div>
+</Site>

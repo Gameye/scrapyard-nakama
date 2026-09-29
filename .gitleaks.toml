@@ -1,0 +1,7 @@
+[allowlist]
+paths = [
+    "game/server/server.check.ts",  # Test file with RFC 6455 sample nonce
+]
+regexes = [
+    "dGhlIHNhbXBsZSBub25jZQ==",  # RFC 6455 sample, not a secret
+]

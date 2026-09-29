@@ -1,0 +1,19 @@
+---
+interface Props {
+  href: string
+  path?: string // the page's path
+}
+
+// A header link that knows when its section is open: a red underline, and
+// aria-current for screen readers.
+const { href, path = '' } = Astro.props
+const current = path === href || path.startsWith(`${href}/`)
+---
+
+<a
+  href={href}
+  aria-current={current ? 'page' : undefined}
+  class:list={['label border-b-2 py-1 transition-colors', current ? 'border-red-500 text-white' : 'border-transparent text-neutral-400 hover:text-ink']}
+>
+  <slot />
+</a>

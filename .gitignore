@@ -1,0 +1,12 @@
+.claude/settings.local.json
+.DS_Store
+node_modules/
+.env
+.env.*
+!.env.example
+# server-only: secrets and database dumps
+deploy/.env
+backups/
+
+# Nakama writes its node id here at runtime
+nakama/data/.cookie

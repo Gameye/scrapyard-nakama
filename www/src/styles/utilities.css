@@ -1,0 +1,77 @@
+/* Section kicker and nav labels: small, bold, tracked capitals, as in the game's menus. */
+@utility label {
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+/* A key on the keyboard, the game's keycap. */
+@utility keycap {
+  display: inline-block;
+  min-width: 1.75em;
+  border: 1px solid rgb(163 163 163 / 0.5);
+  border-radius: 0.25rem;
+  padding: 0.125rem 0.375rem;
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  line-height: 1.4;
+  text-align: center;
+}
+
+/* The one red action per view; everything else is quieter. */
+@utility button-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  border: 2px solid var(--color-red-500);
+  border-radius: 0.25rem;
+  background: rgb(239 68 68 / 0.12);
+  padding: 0.75rem 1.5rem;
+  color: white;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  box-shadow: 0 0 18px rgb(239 68 68 / 0.35);
+  transition: background-color 150ms;
+  &:hover {
+    background: rgb(239 68 68 / 0.28);
+  }
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+}
+
+@utility button-quiet {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  border: 1px solid rgb(255 255 255 / 0.25);
+  border-radius: 0.25rem;
+  padding: 0.75rem 1.5rem;
+  color: var(--color-ink);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  transition: border-color 150ms, background-color 150ms;
+  &:hover {
+    border-color: rgb(255 255 255 / 0.5);
+    background: rgb(255 255 255 / 0.05);
+  }
+}
+
+/* A link inside running text: bold red, underlined. */
+@utility text-link {
+  @apply font-semibold text-red-400 underline decoration-red-500/50 underline-offset-4 hover:text-red-300;
+}
+
+/* Every <kbd> is a keycap, the ones written as JSX in the guide's MDX too. */
+kbd {
+  @apply keycap;
+}

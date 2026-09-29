@@ -1,0 +1,15 @@
+# dependencies and builds
+/node_modules
+/dist
+/.astro
+
+# env files: .env.example is the template
+.env*
+!.env.example
+
+# misc
+.DS_Store
+*.log
+
+# the game's build, copied in by scripts/build.sh
+/public/play/

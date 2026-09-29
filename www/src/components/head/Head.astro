@@ -1,0 +1,27 @@
+---
+import frauncesItalic from '@fontsource-variable/fraunces/files/fraunces-latin-opsz-italic.woff2?url'
+import fraunces from '@fontsource-variable/fraunces/files/fraunces-latin-opsz-normal.woff2?url'
+import manrope from '@fontsource-variable/manrope/files/manrope-latin-wght-normal.woff2?url'
+import type { PageMeta } from '@/lib/seo'
+import { SITE } from '@/lib/site'
+import Analytics from './Analytics.astro'
+import Seo from './Seo.astro'
+
+type Props = PageMeta
+
+// The Latin files of both faces (every page's text), fetched with the page
+// instead of after the stylesheet asks for them.
+const fonts = [fraunces, frauncesItalic, manrope]
+---
+
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+{fonts.map((href) => <link rel="preload" href={href} as="font" type="font/woff2" crossorigin />)}
+<meta name="theme-color" content={SITE.themeColor} />
+<meta name="color-scheme" content="dark" />
+<Seo {...Astro.props} />
+<meta name="application-name" content={SITE.name} />
+<meta name="format-detection" content="telephone=no, address=no, email=no" />
+<link rel="icon" href="/icon.png" sizes="512x512" type="image/png" />
+<link rel="apple-touch-icon" href="/apple-icon.png" sizes="180x180" type="image/png" />
+<Analytics />

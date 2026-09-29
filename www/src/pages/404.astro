@@ -1,0 +1,17 @@
+---
+import Site from '@/layouts/Site.astro'
+import { SITE } from '@/lib/site'
+---
+
+<Site description={SITE.description} index={false}>
+  <div class="mx-auto w-full max-w-2xl px-4 py-24 sm:py-32">
+    <p class="label text-red-400">404</p>
+    <h1 class="mt-4 font-display text-4xl font-semibold sm:text-5xl">Nothing left here but scrap</h1>
+    <p class="mt-5 leading-7 text-neutral-300">The page you wanted isn&rsquo;t here. It may have moved, or the link was mistyped.</p>
+    <div class="mt-8 flex flex-wrap gap-4">
+      <a href="/" class="button-quiet">Home</a>
+      <a href="/docs" class="button-quiet">Guide</a>
+      <a href="/play" class="button-primary">Play</a>
+    </div>
+  </div>
+</Site>

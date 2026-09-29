@@ -1,0 +1,33 @@
+---
+import { GUIDE } from '@/lib/guide'
+
+interface Props {
+  current: string // the open page's href
+}
+
+// Previous / next page, in the list's order.
+const at = GUIDE.findIndex(({ href }) => href === Astro.props.current)
+const prev = GUIDE[at - 1]
+const next = GUIDE[at + 1]
+---
+
+<nav aria-label="Previous and next page" class="mt-16 flex justify-between gap-6 border-t border-line pt-6 text-sm">
+  {
+    prev ? (
+      <a href={prev.href} class="group">
+        <span class="label block text-neutral-400">Previous</span>
+        <span class="mt-1 block font-semibold text-neutral-300 group-hover:text-white">{prev.title}</span>
+      </a>
+    ) : (
+      <span />
+    )
+  }
+  {
+    next && (
+      <a href={next.href} class="group text-right">
+        <span class="label block text-neutral-400">Next</span>
+        <span class="mt-1 block font-semibold text-neutral-300 group-hover:text-white">{next.title}</span>
+      </a>
+    )
+  }
+</nav>

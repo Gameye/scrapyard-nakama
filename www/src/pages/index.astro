@@ -1,0 +1,30 @@
+---
+import Backdrop from '@/components/home/Backdrop.astro'
+import QuickLinks from '@/components/home/QuickLinks.astro'
+import StructuredData from '@/components/home/StructuredData.astro'
+import PlayerCount from '@/components/site/PlayerCount.astro'
+import SiteHeader from '@/components/site/SiteHeader.astro'
+import Base from '@/layouts/Base.astro'
+import { SITE } from '@/lib/site'
+
+// The home page: one full-screen scene, the header laid over it.
+---
+
+<Base description={SITE.description} path="/">
+  <StructuredData />
+  <SiteHeader path="/" overlay />
+  <main id="main" class="relative isolate flex min-h-svh items-center overflow-hidden">
+    <Backdrop />
+    <div class="mx-auto w-full max-w-6xl px-4 pt-24 pb-16 sm:px-6">
+      <div class="max-w-xl">
+        <PlayerCount />
+        <h1 class="mt-6 font-display text-5xl leading-[1.05] font-semibold sm:text-6xl lg:text-7xl">Car combat in your browser</h1>
+        <p class="mt-6 max-w-lg text-lg leading-relaxed text-neutral-300">
+          A war rig, a gun on the roof, ten minutes on the clock. Team Deathmatch and Free for All online, or practise against bots; nothing to install.
+        </p>
+        <a href="/play" class="button-primary mt-10">Play now</a>
+      </div>
+    </div>
+    <QuickLinks />
+  </main>
+</Base>

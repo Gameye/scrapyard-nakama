@@ -1,0 +1,33 @@
+---
+import { seo, type PageMeta } from '@/lib/seo'
+import { SITE } from '@/lib/site'
+
+type Props = PageMeta
+
+// The page's title, description and search-engine rules, and the card that
+// shows when a link to it is shared.
+const page = seo(Astro.props)
+const card = SITE.card
+---
+
+<title>{page.title}</title>
+<meta name="description" content={page.description} />
+{!page.index && <meta name="robots" content="noindex, follow" />}
+{page.canonical && <link rel="canonical" href={page.canonical} />}
+<meta property="og:title" content={page.title} />
+<meta property="og:description" content={page.description} />
+{page.canonical && <meta property="og:url" content={page.canonical} />}
+<meta property="og:site_name" content={SITE.name} />
+<meta property="og:locale" content="en_GB" />
+<meta property="og:image" content={page.image} />
+<meta property="og:image:width" content={String(card.width)} />
+<meta property="og:image:height" content={String(card.height)} />
+<meta property="og:image:alt" content={card.alt} />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content={page.title} />
+<meta name="twitter:description" content={page.description} />
+<meta name="twitter:image" content={page.image} />
+<meta name="twitter:image:alt" content={card.alt} />
+<meta name="twitter:image:width" content={String(card.width)} />
+<meta name="twitter:image:height" content={String(card.height)} />

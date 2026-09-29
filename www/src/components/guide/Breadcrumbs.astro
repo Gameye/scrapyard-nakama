@@ -1,0 +1,22 @@
+---
+import JsonLd from '@/components/head/JsonLd.astro'
+import { GUIDE, type GuidePage } from '@/lib/guide'
+import { absolute } from '@/lib/seo'
+import { SITE } from '@/lib/site'
+
+interface Props {
+  page: GuidePage
+}
+
+// Where a guide page sits (Scrapyard › Guide › the page), as structured data:
+// search results show it as the page's path. The guide's own page stops at Guide.
+const { page } = Astro.props
+const guide = GUIDE[0]
+const trail = [{ name: SITE.name, path: '/' }, { name: 'Guide', path: guide.href }, ...(page === guide ? [] : [{ name: page.title, path: page.href }])]
+const data = {
+  '@type': 'BreadcrumbList',
+  itemListElement: trail.map(({ name, path }, i) => ({ '@type': 'ListItem', position: i + 1, name, item: absolute(path) })),
+}
+---
+
+<JsonLd data={data} />

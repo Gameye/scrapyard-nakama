@@ -1,0 +1,97 @@
+# A testing/staging server: Caddy serving the site (static files, the game
+# inside at /play) with TLS, the game server (online matches, at /match),
+# Nakama and its Postgres. Only Caddy publishes ports; the Nakama console
+# listens on the server's loopback (reach it over SSH). Settings and secrets
+# come from deploy/.env (see .env.example).
+#   scripts/deploy.sh rolls it; podman compose ps / logs to look at it.
+services:
+  caddy:
+    image: docker.io/library/caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - SITE_DOMAIN=${SITE_DOMAIN:?set SITE_DOMAIN in deploy/.env}
+      - API_DOMAIN=${API_DOMAIN:?set API_DOMAIN in deploy/.env}
+      - NAKAMA_HTTP_KEY=${NAKAMA_HTTP_KEY:?} # /api/stats (the Caddyfile)
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      # site/current: the release scripts/deploy.sh switched to (site/releases/<sha>)
+      - ../site:/srv/site:ro
+    # no depends_on: Podman would then refuse to replace nakama or game on its own
+    # (scripts/deploy.sh --nakama / --server does); Caddy answers 502 for the seconds it's down
+
+  # The game server (game/server, bundled into one directory by the build):
+  # every online match, run where players can't touch it. It checks Nakama's
+  # session tokens itself, with Nakama's key, and needs nothing else. Caddy
+  # is the only way in (/match on the site), so it trusts Caddy's
+  # X-Forwarded-For for players' addresses.
+  game:
+    image: docker.io/library/node:24-alpine
+    restart: unless-stopped
+    user: node
+    command: node /srv/server/main.js
+    environment:
+      - PORT=7360
+      - NAKAMA_ENCRYPTION_KEY=${NAKAMA_ENCRYPTION_KEY:?}
+      - ALLOWED_ORIGINS=https://${SITE_DOMAIN:?set SITE_DOMAIN in deploy/.env}
+      - MAX_ROOMS=${MAX_ROOMS:-12}
+      - TRUST_PROXY=1
+    volumes:
+      # server/current: the release scripts/deploy.sh switched to (server/releases/<sha>), read when the container starts
+      - ../server/current:/srv/server:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:7360/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  nakama:
+    image: docker.io/heroiclabs/nakama:3.30.0
+    restart: unless-stopped
+    entrypoint:
+      - "/bin/sh"
+      - "-ec"
+      - >
+        /nakama/nakama migrate up --database.address postgres:${POSTGRES_PASSWORD}@postgres:5432/nakama &&
+        exec /nakama/nakama --config /nakama/data/config.yml
+        --database.address postgres:${POSTGRES_PASSWORD}@postgres:5432/nakama
+        --socket.server_key ${NAKAMA_CLIENT_KEY:?}
+        --session.encryption_key ${NAKAMA_ENCRYPTION_KEY:?}
+        --session.refresh_encryption_key ${NAKAMA_REFRESH_ENCRYPTION_KEY:?}
+        --console.username ${NAKAMA_CONSOLE_USER:?}
+        --console.password ${NAKAMA_CONSOLE_PASSWORD:?}
+        --console.signing_key ${NAKAMA_CONSOLE_SIGNING_KEY:?}
+        --runtime.http_key ${NAKAMA_HTTP_KEY:?}
+    volumes:
+      - ../nakama/data:/nakama/data
+    ports:
+      - "127.0.0.1:7351:7351"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/nakama/nakama", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: docker.io/library/postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=nakama
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "nakama"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  caddy_data:
+  postgres_data:

@@ -1,0 +1,17 @@
+---
+import { SITE } from '@/lib/site'
+
+// Google Analytics (gtag.js), loaded without holding up the page.
+const id = SITE.analytics
+---
+
+<script is:inline async src={`https://www.googletagmanager.com/gtag/js?id=${id}`}></script>
+<script is:inline define:vars={{ id }}>
+  window.dataLayer = window.dataLayer || []
+  function gtag() {
+    // eslint-disable-next-line prefer-rest-params -- gtag.js reads Arguments objects, not arrays
+    dataLayer.push(arguments)
+  }
+  gtag('js', new Date())
+  gtag('config', id)
+</script>

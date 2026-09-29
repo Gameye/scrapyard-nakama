@@ -1,0 +1,41 @@
+@import 'tailwindcss';
+@import './fonts.css';
+@import './utilities.css';
+@import './guide.css';
+
+/* The game's look: warm off-white on near-black, the drawers' panel blue-black,
+   red for what matters. The fonts are set up in fonts.css. */
+@theme {
+  --color-ink: #f2ece0;
+  --color-base: #0c0e13;
+  --color-panel: #12161f;
+  --color-line: rgb(255 255 255 / 0.1);
+}
+
+@theme inline {
+  --font-display: var(--font-fraunces), Georgia, 'Times New Roman', serif;
+  --font-sans: var(--font-manrope), system-ui, 'Segoe UI', sans-serif;
+}
+
+html {
+  background: var(--color-base);
+  color: var(--color-ink);
+  color-scheme: dark;
+}
+
+body {
+  display: flex;
+  min-height: 100dvh;
+  flex-direction: column;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: rgb(239 68 68 / 0.35);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-red-500);
+  outline-offset: 3px;
+}

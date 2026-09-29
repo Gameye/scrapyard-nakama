@@ -1,0 +1,15 @@
+name: scrapyard-node
+data_dir: "/nakama/data"
+
+console:
+  port: 7351
+
+socket:
+  server_key: "defaultkey"
+
+session:
+  token_expiry_sec: 7200
+  refresh_token_expiry_sec: 2592000 # 30 days: a www login lasts between visits (Nakama's default, 1 h, is shorter than the token)
+
+runtime:
+  path: "/nakama/data/modules"

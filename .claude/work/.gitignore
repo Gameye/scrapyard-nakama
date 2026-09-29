@@ -1,0 +1,11 @@
+/*
+!/.gitignore
+!/README.md
+!/active/
+!/arch/
+!/ffa/
+!/tdm/
+!/mm/
+!/net/
+!/www/
+.DS_Store

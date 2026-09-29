@@ -1,0 +1,19 @@
+---
+import SiteFooter from '@/components/site/SiteFooter.astro'
+import SiteHeader from '@/components/site/SiteHeader.astro'
+import type { PageMeta } from '@/lib/seo'
+import Base from './Base.astro'
+
+type Props = PageMeta
+
+// Every page but the home page: header, the page, footer. The home page is
+// one full-screen scene with the header laid over it (pages/index.astro).
+---
+
+<Base {...Astro.props}>
+  <SiteHeader path={Astro.props.path} />
+  <main id="main" class="flex-1">
+    <slot />
+  </main>
+  <SiteFooter />
+</Base>
