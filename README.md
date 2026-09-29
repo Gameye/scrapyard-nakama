@@ -1,4 +1,4 @@
-# BBMV
+# BBMV Combat
 
 <p align="center">
   <img src=".github/assets/gameplay.gif" width="480" alt="Scrapyard gameplay: a war rig with a roof minigun fighting through the streets of The City in Team Deathmatch" />
