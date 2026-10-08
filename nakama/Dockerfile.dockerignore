@@ -1,0 +1,8 @@
+# nakama/Dockerfile's build context (the repo root): the plugin's source,
+# the Lua modules, config.yml and the entrypoint. Never a locally built .so.
+*
+!nakama/modules-src/
+!nakama/data/config.yml
+!nakama/data/modules/*.lua
+!nakama/docker-entrypoint.sh
+nakama/modules-src/vendor

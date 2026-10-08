@@ -1,0 +1,9 @@
+# The game server image (Dockerfile) needs game/ and LICENSE only.
+# nakama/Dockerfile has its own list: nakama/Dockerfile.dockerignore.
+*
+!LICENSE
+!game/
+game/node_modules
+game/dist
+game/dist-*
+game/.env*

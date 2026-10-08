@@ -1,0 +1,47 @@
+# Gameye mode on your machine: Postgres, and Nakama from the image with the
+# Gameye plugin baked in (nakama/Dockerfile). scripts/gameye-up.sh runs it:
+# it makes sure your Gameye application and its tag are ready, builds or
+# pulls the Nakama image, sets the variables below, and starts the page and
+# the relay beside it on your machine. Stop with: scripts/gameye-up.sh --down
+#
+# No bind mount on /nakama/data: it would hide the baked plugin, Lua modules
+# and config (KTD10). A separate project from nakama/compose.yml (upstream's
+# local Nakama); both publish :7350, so run one at a time.
+name: scrapyard-gameye
+
+services:
+  postgres:
+    image: docker.io/library/postgres:16-alpine
+    environment:
+      - POSTGRES_DB=nakama
+      - POSTGRES_PASSWORD=localdb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "nakama"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 60s # the first start initialises the database, slowly on some disks
+
+  nakama:
+    image: ${NAKAMA_IMAGE:?set by scripts/gameye-up.sh}
+    environment:
+      NAKAMA_DATABASE_ADDRESS: postgres:localdb@postgres:5432/nakama
+      # the plugin's runtime.env (nakama/AGENTS.md); the image's entrypoint passes them on
+      GAMEYE_API_URL: ${GAMEYE_API_URL:?set by scripts/gameye-up.sh}
+      GAMEYE_API_TOKEN: ${GAMEYE_API_TOKEN:?set GAMEYE_API_TOKEN in .env.gameye}
+      GAMEYE_API_IMAGE: ${GAMEYE_APPLICATION:?set by scripts/gameye-up.sh}
+      GAMEYE_API_IMAGE_VERSION: ${GAMEYE_GAME_TAG:?set by scripts/gameye-up.sh}
+      GAMEYE_API_REGION: ${GAMEYE_REGION:?set by scripts/gameye-up.sh}
+      RELAY_SECRET: ${RELAY_SECRET:?set by scripts/gameye-up.sh}
+      RELAY_URL: ${RELAY_URL:?set by scripts/gameye-up.sh}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:7350:7350" # client API and socket (server key defaultkey)
+      - "127.0.0.1:7351:7351" # console (admin / password)
+
+volumes:
+  postgres_data:

@@ -5,6 +5,12 @@ node_modules/
 .env
 .env.*
 !.env.example
+!.env.gameye.example
+# wrangler dev's secrets for the relay (scripts/gameye-up.sh writes edge/.dev.vars)
+.dev.vars*
+.wrangler/
+# the page scripts/gameye-up.sh builds and serves
+game/dist-gameye/
 # server-only: secrets and database dumps
 deploy/.env
 backups/
