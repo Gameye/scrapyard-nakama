@@ -1,0 +1,39 @@
+// The Scrapyard relay (edge/worker.js). Deploy from the repo root:
+//   npx wrangler deploy -c edge/wrangler.jsonc --env=""     (production)
+//   npx wrangler deploy -c edge/wrangler.jsonc --env dev    (adds http://localhost:*)
+// Secret, never in this file: npx wrangler secret put RELAY_SECRET -c edge/wrangler.jsonc [--env dev]
+// It must equal the Nakama plugin's RELAY_SECRET (root AGENTS.md, Contracts).
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "scrapyard-relay",
+  "account_id": "48da264b5fa2dc22dc36051e36296f33",
+  "main": "worker.js",
+  "compatibility_date": "2026-09-26",
+  // Custom domain, once Andrew confirms the hostname:
+  // "routes": [{ "pattern": "scrapyard-relay.gameye.com", "custom_domain": true }],
+  "vars": {
+    "ALLOWED_ORIGINS": "https://scrapyard.gameye.com",
+    "GAMEYE_IPV4_DNS_SUFFIX": "sslip.io"
+    // "UPSTREAM_ORIGIN": unset, so the game server sees the page's own Origin.
+  },
+  "limits": { "cpu_ms": 50 },
+  // Request URLs carry relay tokens: no logs, no traces.
+  "observability": {
+    "enabled": false,
+    "logs": { "enabled": false, "invocation_logs": false },
+    "traces": { "enabled": false }
+  },
+  "env": {
+    "dev": {
+      "vars": {
+        "ALLOWED_ORIGINS": "https://scrapyard.gameye.com,http://localhost:*",
+        "GAMEYE_IPV4_DNS_SUFFIX": "sslip.io"
+      },
+      "observability": {
+        "enabled": false,
+        "logs": { "enabled": false, "invocation_logs": false },
+        "traces": { "enabled": false }
+      }
+    }
+  }
+}
