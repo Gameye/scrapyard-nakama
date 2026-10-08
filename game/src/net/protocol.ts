@@ -44,6 +44,7 @@ export interface Hello {
   mode: string
   map: string
   loadout: Loadout // the gun a seat is fitted with
+  seat?: string // a Gameye match's seat token; its game server reads it from the hello as sent (server/gameye-server.ts), parseClient leaves it out
 }
 
 // The controls for one step, as the server reads them (decoded from the wire).
