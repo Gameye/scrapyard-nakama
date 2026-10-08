@@ -22,7 +22,7 @@ scripts/  build.sh (game for /play -> www/public/play -> www/dist, precompressed
 Gameye:   Dockerfile (the game server image: gameye-main, one match per container) and nakama/Dockerfile (Nakama with the plugin, the Lua modules and config.yml baked in), published with the site bundle from one commit as sha-<commit> by .github/workflows/release.yml (ci.yml's checks first); compose.gameye.yml + scripts/gameye-up.sh (Gameye mode on a developer's machine with their own token, .env.gameye.example: sets up their Gameye application and tag, Nakama, the relay and the page; --dry-run prints the API calls and commands; upstream's GCP deploy.yml is off here)
 ```
 
-No monorepo tooling, no root package.json. `game/`, `www/` and `nakama/` are independent.
+No monorepo tooling. `game/`, `www/` and `nakama/` are independent; the root package.json only holds the Gameye relay (`edge/`) and its tests.
 
 ## Instruction files and guides
 
