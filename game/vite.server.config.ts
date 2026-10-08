@@ -11,10 +11,12 @@ import { buildId } from './build-id.ts'
 
 const ENTRIES = {
   main: 'server/main.ts',
+  'gameye-main': 'server/gameye-main.ts', // the Gameye image's entry: one match per container
   'arena.check': 'server/arena.check.ts',
   'server.check': 'server/server.check.ts',
   'client.check': 'server/client.check.ts',
   'netplay.check': 'server/netplay.check.ts',
+  'gameye.check': 'server/gameye.check.ts',
   load: 'server/load.ts',
   replay: 'server/replay-main.ts',
 }

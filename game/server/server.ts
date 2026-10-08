@@ -6,9 +6,9 @@ import type { MapId } from '../src/game/maps'
 import { PHYSICS_STEP } from '../src/game/physics'
 import { createRng } from '../src/game/rng'
 import { BUILD, LIMITS, parseClient, PROTOCOL, wireSize, type ErrorCode, type Hello, type ServerMessage } from '../src/net/protocol'
-import { playerName, verifyToken } from './auth'
+import { playerName, verifyToken, type Identity } from './auth'
 import type { LobbiesConfig } from './custom'
-import { createLobby, type Searcher } from './lobby'
+import { createLobby, type Managed, type Searcher } from './lobby'
 import type { MatchmakingConfig } from './matchmaker'
 import { createRecords } from './records'
 import { queueDepth, type Human, type Room } from './room'
@@ -47,6 +47,11 @@ export interface ServerOptions {
   lobbies?: Partial<LobbiesConfig> // MAX_LOBBIES; the checks' shorter windows
   log?: (line: Record<string, unknown>) => void
   records?: { dir: string; days: number } // keep every match's record and each room's replay there (records.ts); none: nothing is kept
+  authenticate?: (hello: Record<string, unknown>) => Identity | null // who the hello is, in place of the Nakama session token: the hello as the page sent it (gameye-server.ts reads its seat token)
+  managed?: Managed // one match for the whole server (lobby.ts): every hello is seated in it, map or none
+  onJoin?: (uid: string) => void // a person took a seat
+  onLeave?: (uid: string) => void // a person's seat went, and they hold no other
+  clientHeader?: string // with trustProxy: a header naming the client, read when X-Forwarded-For has none (the relay's CF-Connecting-IP)
 }
 
 const RATE = { perSecond: 120, burst: 240 } // messages; a client sends ~61 a second
@@ -60,6 +65,17 @@ const BACKLOG = 512 * 1024
 const CODES: ErrorCode[] = ['version', 'auth', 'full', 'bad-request', 'replaced', 'idle', 'closing', 'arena', 'busy']
 const STEP_MS = PHYSICS_STEP * 1000
 
+// The hello as the page sent it, fields parseClient leaves behind included
+// (an `authenticate` hook's: a Gameye seat token). parseClient has already
+// held it to the hello's size and found it a JSON object.
+function sent(raw: string): Record<string, unknown> {
+  try {
+    return JSON.parse(raw) as Record<string, unknown>
+  } catch {
+    return {}
+  }
+}
+
 // 'http://localhost:*' allows every port of that host; '*' allows every page.
 export function originAllowed(origin: string | undefined, allowed: readonly string[]) {
   if (!origin) return false // browsers always send one
@@ -70,7 +86,7 @@ export function createGameServer(options: ServerOptions) {
   const { key, origins, maxRooms, trustProxy = false, lag = 0, jitter = 0, perAddress = 8, hello: helloWait = 5000, backlog = BACKLOG, build = BUILD, strict = false } = options
   const log = (msg: string, fields: Record<string, unknown> = {}) => (options.log ?? ((line) => console.log(JSON.stringify(line))))({ time: new Date().toISOString(), msg, ...fields })
   const records = options.records && createRecords({ ...options.records, log })
-  const lobby = createLobby({ maxRooms, grace: options.grace, results: options.results, arenaFor: options.arenaFor, matchmaking: options.matchmaking, lobbies: options.lobbies, log, records })
+  const lobby = createLobby({ maxRooms, grace: options.grace, results: options.results, arenaFor: options.arenaFor, matchmaking: options.matchmaking, lobbies: options.lobbies, log, records, managed: options.managed })
   const wobble = createRng(0x51ed) // the jitter (network conditions, not gameplay)
   const delayed = lag > 0 || jitter > 0 || !!options.stall
 
@@ -114,7 +130,9 @@ export function createGameServer(options: ServerOptions) {
   const address = (req: IncomingMessage) => {
     const forwarded = trustProxy ? req.headers['x-forwarded-for'] : undefined
     const list = (Array.isArray(forwarded) ? forwarded.join(',') : (forwarded ?? '')).split(',').map((s) => s.trim()).filter(Boolean)
-    return list.at(-1) ?? req.socket.remoteAddress ?? '?' // the last entry: the one our own proxy wrote
+    // A client header is only as good as the proxy: anyone reaching the server directly can write it (an accepted limit with trustProxy).
+    const named = trustProxy && options.clientHeader ? req.headers[options.clientHeader.toLowerCase()] : undefined
+    return list.at(-1) ?? (typeof named === 'string' && named.trim() ? named.trim() : undefined) ?? req.socket.remoteAddress ?? '?' // the last entry: the one our own proxy wrote
   }
 
   function refuse(socket: Duplex, status: string, reason: string, ip: string) {
@@ -192,21 +210,22 @@ export function createGameServer(options: ServerOptions) {
 
     const deadline = setTimeout(() => fail('bad-request', 'No hello in time'), helloWait)
 
-    function greet(message: Hello) {
+    function greet(message: Hello, raw: string) {
       greeted = true
       clearTimeout(deadline)
       // a page of another version or another build: it's running code this server doesn't
       if (message.v !== PROTOCOL || (message.build !== build && (strict || message.build !== 'dev'))) return fail('version', 'Game updated — reload the page')
-      const identity = verifyToken(message.token, key)
+      const identity = options.authenticate ? options.authenticate(sent(raw)) : verifyToken(message.token, key)
       if (!identity) return fail('auth', 'Your session is not valid — sign in again')
       uid = identity.uid
       const name = playerName(identity, message.guest)
       const seated = (r: Room, h: Human) => {
         ;[room, human] = [r, h]
         if (!r.lobby) session = null // Classic: the socket is the seat's for good
+        options.onJoin?.(uid)
         log('joined', { uid, name: h.name, room: r.id, mode: r.kind, map: r.map, seat: h.seat, ip, ...(r.lobby && { lobby: r.lobby }) })
       }
-      if (!message.map) {
+      if (!message.map && !options.managed) {
         // a session: Classic's matchmaking (the lobby seats it when the matcher finds a match) or custom lobbies
         const opened: Searcher = { uid, name, build: message.build, loadout: message.loadout, send, close: fail, seat: seated, release: () => void ([room, human] = [null, null]), heard: 0 }
         session = opened
@@ -231,7 +250,7 @@ export function createGameServer(options: ServerOptions) {
       const parsed = parseClient(raw.toString('utf8'), raw.length)
       if (parsed.ok === false) return strike(parsed.error) // `=== false` narrows under any strictness (an editor on an older TypeScript isn't strict by default)
       const message = parsed.message
-      if (!greeted) return message.t === 'hello' ? greet(message) : fail('bad-request', 'Say hello first')
+      if (!greeted) return message.t === 'hello' ? greet(message, raw.toString('utf8')) : fail('bad-request', 'Say hello first')
       switch (message.t) {
         case 'hello':
           return strike('second hello')
@@ -261,6 +280,7 @@ export function createGameServer(options: ServerOptions) {
       if (!open.get(ip)) open.delete(ip)
       if (room && human) {
         lobby.leave(room, human, performance.now())
+        if (!lobby.rooms.some((r) => r.humans.some((h) => h.uid === uid))) options.onLeave?.(uid) // not when this socket was replaced by a newer one
         log('left', { uid, room: room.id, seat: human.seat, seconds: Math.round((performance.now() - opened) / 1000), sentKB: Math.round(bytes / 1024), repeats: human.repeats, drops: human.drops, queue: queueDepth(human) })
       }
       if (session) lobby.exit(session, performance.now()) // a custom lobby's member: their slot waits for them a while

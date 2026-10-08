@@ -39,6 +39,20 @@ export interface LobbyOptions {
   lobbies?: Partial<LobbiesConfig> // MAX_LOBBIES; the checks' shorter windows
   log?: (message: string, fields?: Record<string, unknown>) => void
   records?: Records // where finished matches and rooms' replays are kept (MATCH_DIR); none: nothing is kept
+  managed?: Managed // one match for the whole server (a Gameye container): no Classic, no custom lobbies
+}
+
+// A managed server's one match: every person is seated in its one room, on
+// its mode and arena whatever the hello names; the first match holds for
+// `gather` steps from the first seat (or until every seat is a person's and
+// loaded); after its results `complete` is called instead of a next match.
+// The room is never closed for being empty: the server's owner decides when
+// it's done (gameye-server.ts).
+export interface Managed {
+  mode: Mode
+  map: MapId
+  gather: number // steps
+  complete: () => void
 }
 
 // A player seated at once (a hello with a mode and an arena).
@@ -72,7 +86,7 @@ const IDLE = 60_000 // ms a session may go without a ticket before it's let go
 
 export type Lobby = ReturnType<typeof createLobby>
 
-export function createLobby({ maxRooms, grace = 30_000, results, arenaFor, matchmaking, lobbies: lobbyConfig, log = () => {}, records }: LobbyOptions) {
+export function createLobby({ maxRooms, grace = 30_000, results, arenaFor, matchmaking, lobbies: lobbyConfig, log = () => {}, records, managed }: LobbyOptions) {
   const rooms: Room[] = []
   const replays = new Map<Room, ReturnType<Records['replay']>>() // each room's, open while it runs
   const seated = new Map<string, { room: Room; human: Human }>() // by user id
@@ -206,7 +220,7 @@ export function createLobby({ maxRooms, grace = 30_000, results, arenaFor, match
     // A seat at once, in a room of the mode on the arena asked for.
     join(person: Person, now: number): Joined {
       time = now
-      const pair = hosts(person.mode, person.map)
+      const pair = managed ? ([managed.mode, managed.map] as const) : hosts(person.mode, person.map)
       if (!pair) return { error: 'bad-request', text: `No ${person.mode} on ${person.map}` }
       const before = seated.get(person.uid)
       if (before) {
@@ -222,8 +236,9 @@ export function createLobby({ maxRooms, grace = 30_000, results, arenaFor, match
       const [mode, map] = pair
       let room = rooms.find((r) => r.kind === mode && r.map === map && r.open())
       if (!room) {
+        if (managed && rooms.length) return { error: 'full', text: 'The match is full' } // full, or over: there is no other
         if (rooms.length >= maxRooms) return { error: 'full', text: 'Every room on this server is busy' }
-        room = open(mode, map, person.build)
+        room = managed ? open(mode, map, person.build, managed.gather, { gather: true, complete: managed.complete }) : open(mode, map, person.build)
         log('room opened', { room: room.id, mode, map, rooms: rooms.length })
       }
       const human = room.join(person, now)
@@ -237,6 +252,7 @@ export function createLobby({ maxRooms, grace = 30_000, results, arenaFor, match
     // again (they hear where it stands).
     enter(searcher: Searcher, now: number): { error: ErrorCode; text: string } | null {
       time = now
+      if (managed) return { error: 'bad-request', text: 'This server plays one match' }
       if (seated.has(searcher.uid)) return { error: 'busy', text: 'You’re already in an online match' }
       const before = searchers.get(searcher.uid)
       searchers.set(searcher.uid, searcher)
@@ -294,7 +310,7 @@ export function createLobby({ maxRooms, grace = 30_000, results, arenaFor, match
       }
       for (let i = rooms.length - 1; i >= 0; i--) {
         const room = rooms[i]
-        if (room.lobby || room.humans.length || now - room.emptySince < grace) continue // a custom room closes with its match
+        if (managed || room.lobby || room.humans.length || now - room.emptySince < grace) continue // a custom room closes with its match
         rooms.splice(i, 1)
         void close(room)
         log('room closed', { room: room.id, rooms: rooms.length })

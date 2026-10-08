@@ -39,6 +39,10 @@ import { createRewind } from './rewind'
 // other seats empty; a person who leaves leaves an empty seat, never a bot;
 // Classic never sees it; and after its results the lobby hears the match is
 // over (`over`) instead of a next match starting.
+// A one-match room (`complete`: a Gameye container's) holds its first match
+// for the whole `hold` (`gather`: the other matched people may still be on
+// their way) unless every seat is a person's and loaded, and after its
+// results calls `complete` instead of starting the next match.
 
 export const SKILL = DIFFICULTIES.normal // the bots' online
 const QUEUE = 6 // inputs kept per player; past this the oldest go (latency capped)
@@ -174,11 +178,13 @@ export interface RoomOptions {
   chat?: string // the channel for everyone in the room (a custom lobby's own, so the talk carries on); a new one otherwise
   over?: (winner: number | null | undefined) => void // a custom room's match is over, results and all: the winning team (free for all: seat), null a draw, undefined abandoned
   idle?: (human: Human) => boolean // a custom room's person sent nothing for a minute: the lobby takes them out of the match, not off its socket (false: let go as anywhere)
+  gather?: boolean // the first match holds for the whole `hold`, unless every seat is a person's and their pages have loaded
+  complete?: () => void // a one-match room: its match is over, results and all (once); no next match
 }
 
 export type Room = ReturnType<typeof createRoom>
 
-export function createRoom({ id, mode: kind, map, build = '', hold = -1, seed: first, settings = classic(kind), results = 15, arena = arenaData(map), log = () => {}, created = Date.now(), reseed = freshSeed, record, journal, lobby, plan, chat: everyone, over, idle }: RoomOptions) {
+export function createRoom({ id, mode: kind, map, build = '', hold = -1, seed: first, settings = classic(kind), results = 15, arena = arenaData(map), log = () => {}, created = Date.now(), reseed = freshSeed, record, journal, lobby, plan, chat: everyone, over, idle, gather = false, complete }: RoomOptions) {
   let seed = first ?? freshSeed()
   journal?.({ replay: 1, protocol: PROTOCOL, build, room: id, mode: kind, map, seed, created, hold, results, settings, ...(lobby && { lobby, plan }) })
   const digest = arenaDigest(arena)
@@ -216,6 +222,7 @@ export function createRoom({ id, mode: kind, map, build = '', hold = -1, seed: f
   let ended = false // a custom room's match is over: the lobby has heard
   let deserted = -1 // ms: when its match found itself without a person; -1 while someone is seated
   let next = -1 // the tick the next match starts at, once this one is over
+  let completed = false // a one-match room's match is over: `complete` was called
   const full = mode.rules.remaining() // seconds on a match's clock
   let changed = true // the rules had events since the state last went out
   let sharedAt = -Infinity
@@ -242,7 +249,7 @@ export function createRoom({ id, mode: kind, map, build = '', hold = -1, seed: f
 
   function step(now: number) {
     tick++
-    if (hold >= 0 && (tick >= hold || humans.every((h) => h.last))) release()
+    if (hold >= 0 && (tick >= hold || ((!gather || humans.length === combatants.length) && humans.every((h) => h.last)))) release()
     const live = next < 0
     const given: number[][] = []
     for (const human of humans) {
@@ -267,7 +274,11 @@ export function createRoom({ id, mode: kind, map, build = '', hold = -1, seed: f
       if (mode.outcome() !== undefined) finish()
     } else if (tick >= next) {
       if (lobby) end(mode.outcome())
-      else restart()
+      else if (!complete) restart()
+      else if (!completed) {
+        completed = true
+        complete()
+      }
     }
     if (lobby && live && !ended) {
       if (humans.length) deserted = -1
