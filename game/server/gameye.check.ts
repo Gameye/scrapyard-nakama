@@ -14,14 +14,17 @@ import { request } from 'node:http'
 import type { Socket } from 'node:net'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { linkEnded } from '../src/game/linkEnd'
 import { initPhysics } from '../src/game/physics'
+import { join as joinMatch, openSocket } from '../src/net/connection'
 import { BUILD, PROTOCOL, readServer, type ServerMessage } from '../src/net/protocol'
 import { arenaData } from './arenas'
+import { page, until as pageUntil } from './browser'
 import { seatSignature, signSeatToken, verifySeatToken } from './gameye-auth'
-import { createManagedServer, type ManagedOptions } from './gameye-server'
+import { createManagedServer, ENDINGS, type ManagedOptions } from './gameye-server'
 
 await initPhysics()
-arenaData('scrapyard')
+const arena = arenaData('scrapyard')
 
 let checks = 0
 const check = (ok: boolean, what: string) => {
@@ -256,6 +259,38 @@ const leaveAll = (ps: Probe[]) => ps.forEach((p) => p.ws.close())
   check((await m.done) === 'match over' && performance.now() - buzzer >= 900, 'after the results it ends: one match, no next one')
   await until(() => !!a.closed(), 2000, 'the page to be let go')
   check(a.last('err')?.code === 'closing' && !a.of('s').some((s) => s.ev.some((e) => e[0] === 'go')), 'the page is told, and no next match ever started')
+  check(a.last('err')?.text === ENDINGS['match over'] && a.closed()!.code === 4006, `told the match is over, with the protocol's closing code (${JSON.stringify(a.last('err'))}, ${a.closed()!.code})`)
+}
+
+// A page (net/connection.ts and net/client.ts, as online.ts plays them) at
+// the end: its link ends only once the result is in, so the results stay up
+// (linkEnd.ts) — never Connection lost. A session cut short mid-match is.
+async function pageIn(port: number, uid: string) {
+  const link = await joinMatch(await openSocket(`ws://127.0.0.1:${port}/match`, ORIGIN), { token: 'gameye', guest: false, mode: 'ffa', map: 'scrapyard', loadout: { vehicle: 'razor', weapon: 'minigun' }, seat: seatFor(uid) })
+  return page(link, arena)
+}
+{
+  const { m } = managed({ results: 1, gather: 0 })
+  const port = await m.listen()
+  const b = await pageIn(port, 'page-end')
+  const room = m.server.lobby.rooms[0]
+  room.combatants[1].stats.kills = 3 // a sole leader at the buzzer: no overtime
+  Object.assign(room.mode.rules, { now: 3 + 600 - 0.2 })
+  await pageUntil(() => b.mode.outcome() !== undefined, 2000, 'the result on the page', [b])
+  check(b.client.net.lost === '', 'the results are up and the link is still open')
+  await pageUntil(() => b.client.net.lost !== '', 4000, 'the session to end', [b])
+  check((await m.done) === 'match over' && b.client.net.lost === ENDINGS['match over'], `the page's link ends with the server's word (“${b.client.net.lost}”)`)
+  const outcome = b.mode.outcome()
+  check(outcome !== undefined && linkEnded('victory', outcome) === 'stay' && linkEnded('defeat', outcome) === 'stay', 'the result is in when the link ends: the results stay up')
+  check(linkEnded('playing', outcome) === 'result', 'even a page that had not drawn the result yet shows it, not Connection lost')
+}
+{
+  const { m } = managed({ maxSession: 700, gather: 0 })
+  const port = await m.listen()
+  const b = await pageIn(port, 'page-cut')
+  await pageUntil(() => b.client.net.lost !== '', 3000, 'the hard limit', [b])
+  check((await m.done) === 'time limit' && b.mode.outcome() === undefined && linkEnded('playing', b.mode.outcome()) === 'lost', `cut short mid-match: Connection lost (“${b.client.net.lost}”)`)
+  check(b.client.net.lost !== ENDINGS['match over'], 'and not told the match is over')
 }
 
 // A match that never finishes: the hard limit ends it.

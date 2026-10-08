@@ -327,11 +327,11 @@ export function createGameServer(options: ServerOptions) {
         }),
       )
     },
-    // Everyone is told the server is going, then it stops (once the rooms' replays are on disk).
-    close() {
+    // Everyone is told the server is going (`text`: why, in the player's words), then it stops (once the rooms' replays are on disk).
+    close(text = 'The server is restarting') {
       clearTimeout(timer)
       for (const ws of wss.clients) {
-        ws.send(JSON.stringify({ t: 'err', code: 'closing', text: 'The server is restarting' }))
+        ws.send(JSON.stringify({ t: 'err', code: 'closing', text }))
         ws.close(4000 + CODES.indexOf('closing'), 'closing')
       }
       records?.close()

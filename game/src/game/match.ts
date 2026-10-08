@@ -6,6 +6,7 @@ import { arenaDigest } from './arena/digest'
 import { playSound, setGameAudio } from './audio'
 import { WEAPONS } from './combat'
 import { createFeed } from './feed'
+import { linkEnded } from './linkEnd'
 import type { Loadout } from './loadout'
 import type { MapId } from './maps'
 import { classic } from './matchSettings'
@@ -303,9 +304,12 @@ export function playMatch(parts: MatchParts, source: MatchSource) {
   source.attach?.({
     restarted,
     lose(reason) {
-      if (state.phase === 'lost') return
+      if (state.lost) return
       state.lost = reason
-      setPhase('lost')
+      const outcome = mode.outcome()
+      const after = linkEnded(state.phase, outcome)
+      if (after === 'lost') setPhase('lost')
+      else if (after === 'result') finish(outcome ?? null) // the results stay up (linkEnd.ts)
     },
   })
 

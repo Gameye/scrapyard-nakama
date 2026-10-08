@@ -18,6 +18,9 @@ import { createGameServer } from './server'
 //   'empty'        the last person left `emptyIdle` ago
 //   'time limit'   `maxSession` since it started, whatever the match is doing
 // (or whatever `stop` was given: a signal). Gameye's TTL is the backstop.
+// Every page is told why as the protocol's `closing` error, then let go:
+// ENDINGS' words. A page whose link ends once the result is in keeps the
+// results up (src/game/linkEnd.ts); 'match over' only comes after them.
 
 export interface ManagedOptions {
   port: number
@@ -38,6 +41,13 @@ export interface ManagedOptions {
 }
 
 export const GATHER = 10_000 // ms
+
+// The closing error's text for each end (root AGENTS.md, Contracts); any other: SHUT_DOWN.
+export const ENDINGS: Record<string, string> = {
+  'match over': 'The match is over',
+  'time limit': 'The match ran out of time',
+}
+const SHUT_DOWN = 'The match server shut down'
 
 export function createManagedServer(options: ManagedOptions) {
   const { secret, sessionId, initialIdle, emptyIdle, maxSession, gather = GATHER, mode = 'ffa', map = 'scrapyard', log: write = (line) => console.log(JSON.stringify(line)) } = options
@@ -74,7 +84,7 @@ export function createManagedServer(options: ManagedOptions) {
     clearTimeout(limit)
     log('session over', { reason, session: sessionId })
     // Everyone told, the room closed; a socket that won't finish closing doesn't hold the end up past 3 s.
-    void Promise.race([server.close(), new Promise((resolve) => setTimeout(resolve, 3000).unref())]).then(() => finish(reason))
+    void Promise.race([server.close(Object.hasOwn(ENDINGS, reason) ? ENDINGS[reason] : SHUT_DOWN), new Promise((resolve) => setTimeout(resolve, 3000).unref())]).then(() => finish(reason))
   }
 
   return {

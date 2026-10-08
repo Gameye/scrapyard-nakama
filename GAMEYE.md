@@ -57,7 +57,7 @@ Step by step:
 4. **The plugin tells the players.** Each player gets a `gameye_match` notification with the relay's URL, a relay token and their own seat token.
 5. **The page connects through the relay.** The browser can only open `wss://` sockets from an `https://` page, and Gameye containers listen on a bare IP and port. The relay terminates TLS and opens a plain WebSocket to the container. It takes the container's address from the signed relay token, never from the page.
 6. **The game server seats the player.** The page's hello carries the seat token. The game server checks it with this match's secret and seats the player.
-7. **The session ends itself.** After the match's results, when nobody shows up, when the last player leaves, or at a hard time limit, the process exits and Gameye ends the session. Gameye's TTL is the backstop.
+7. **The session ends itself.** After the match's results, when nobody shows up, when the last player leaves, or at a hard time limit, the process exits and Gameye ends the session. Gameye's TTL is the backstop. After the results the page is told the match is over and keeps the results up, with Play again (a new search) and Exit.
 
 If the session can't start, players get a `gameye_failed` notification with a reason, and the page offers to try again. The plugin retries twice on "no capacity" (HTTP 420) and on Gameye server errors (5xx), and gives up at once on errors a retry won't fix, such as a missing scope.
 
