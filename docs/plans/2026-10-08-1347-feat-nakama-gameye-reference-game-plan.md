@@ -158,7 +158,7 @@ sequenceDiagram
   participant G as Gameye API
   participant W as Worker
   participant C as Container
-  P->>N: matchmaker add (2-8); after 12 s alone, gameye_solo_match RPC
+  P->>N: matchmaker add (2-8), after 12 s alone gameye_solo_match RPC
   N->>N: MatchmakerMatched hook: new seat secret
   N->>G: POST /session (env: seat secret, ttl 30m) via Fleet Manager
   G-->>N: 201 host, ports
