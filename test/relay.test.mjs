@@ -40,6 +40,24 @@ async function run(request, runEnv = env, upstream = async () => switched) {
   }
 }
 
+// Printed by nakama/modules-src/tokens.go's signRelayToken (pinned there by TestTokensMatchThePinnedVectors,
+// and in game/server/gameye.check.ts as GO_RELAY): session sess-7f3a, 1.2.3.4:7360, issued at 1900000000.
+const GO_SECRET = 'seat-secret-for-the-checks-0123456789abcdef'
+const GO_RELAY =
+  'v1.eyJ0IjoicmVsYXkiLCJzaWQiOiJzZXNzLTdmM2EiLCJob3N0IjoiMS4yLjMuNCIsInBvcnQiOjczNjAsImV4cCI6MTkwMDAwMDEyMH0.FE8NCsPi_n-nq6cOIw871t59b6hsKBSeHc8UfMQxKFY'
+
+test('the Go reference relay token verifies here, to its claims, until its exp', async () => {
+  const relayed = await verifyRelayToken(GO_SECRET, GO_RELAY, 1_900_000_120)
+  assert.ok(relayed, 'the Go token is good at its exp')
+  assert.equal(relayed.sid, 'sess-7f3a')
+  assert.equal(relayed.host, '1.2.3.4')
+  assert.equal(relayed.port, 7360)
+  assert.equal(relayed.exp, 1_900_000_120)
+  assert.equal(GO_RELAY, sign({ t: 'relay', sid: 'sess-7f3a', host: '1.2.3.4', port: 7360, exp: 1_900_000_120 }, GO_SECRET), "the tests' own signing is Go's, byte for byte")
+  assert.equal(await verifyRelayToken(GO_SECRET, GO_RELAY, 1_900_000_121), null, 'expired a second after')
+  assert.equal(await verifyRelayToken(`${GO_SECRET}x`, GO_RELAY, 1_900_000_000), null, 'another secret is refused')
+})
+
 test('a valid token from the allowed origin is relayed to <ip>.<suffix>:<port>/match', async () => {
   const { response, seen } = await run(upgrade(sign(claims())))
   assert.equal(seen.length, 1)

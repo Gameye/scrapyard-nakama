@@ -100,14 +100,16 @@ for _, entry := range entries {
 	}
 	// ...collect the user ids...
 }
-// ...mark the players as starting...
+// ...mark the players as starting, leaving out any already starting or holding good tokens...
 
 // The first ticket traces the Gameye session back to the matchmaker.
-m.start(ctx, userIds, entries[0].GetTicket())
+m.start(ctx, players, entries[0].GetTicket())
 return "", nil
 ```
 
-The solo RPC, `soloMatch`, calls the same `start` for one player. A player whose session is already on its way gets `{"status":"starting"}` and nothing new starts. A player who already has a match with good tokens gets that match back.
+The hook leaves out a player whose session is already on its way (the page calls the solo RPC as it takes its ticket back), so nobody lands in two sessions. A player who still holds an earlier match has queued again, so the new match is theirs and the old one is no longer offered for resume.
+
+The solo RPC, `soloMatch`, calls the same `start` for one player. A player whose session is already on its way gets `{"status":"starting"}` and nothing new starts. Otherwise a fresh call (no payload) always starts a new session, so a player who left a match and searches again never gets the old one back. Only a resume, `{"resume":true}`, which the page sends when its socket came back mid-search and it found no match in its notifications, gets the player's match with good tokens back, once.
 
 ### Create, with a per-match secret in `gameye.env`
 
@@ -208,6 +210,21 @@ Gameye echoes container env back in a session's labels. The Fleet Manager strips
 
 They are secrets: pass them as `--runtime.env KEY=value` flags, as environment variables to the image built from [`nakama/Dockerfile`](nakama/Dockerfile), or in a second, uncommitted config file. Never put them in `nakama/data/config.yml`. More in [`nakama/AGENTS.md`](nakama/AGENTS.md).
 
+### The Nakama image's own keys
+
+The image built from [`nakama/Dockerfile`](nakama/Dockerfile) refuses to start (exit 2) unless it gets session keys of its own, because the game server trusts Nakama's session tokens as they are. With Nakama's public default key anyone could sign a session for any player, and a refresh key equal to the session key would let a 30-day refresh token pass for a session. Set these environment variables, the same keys `deploy/compose.yml` passes upstream:
+
+| Variable | Required | Nakama flag |
+|---|---|---|
+| `NAKAMA_ENCRYPTION_KEY` | yes | `--session.encryption_key`: not `defaultencryptionkey` |
+| `NAKAMA_REFRESH_ENCRYPTION_KEY` | yes | `--session.refresh_encryption_key`: not `defaultrefreshencryptionkey`, and not the session key |
+| `NAKAMA_SERVER_KEY` | set it | `--socket.server_key` (the page's `VITE_NAKAMA_KEY`) |
+| `NAKAMA_CONSOLE_USERNAME`, `NAKAMA_CONSOLE_PASSWORD` | set them | `--console.username`, `--console.password` |
+| `NAKAMA_CONSOLE_SIGNING_KEY` | set it | `--console.signing_key` |
+| `NAKAMA_HTTP_KEY` | set it | `--runtime.http_key` (the nightly guest cleanup calls with it) |
+
+Or put them all in the second config file named by `NAKAMA_CONFIG_EXTRA`; the image then leaves the check to you. The values are never printed. `compose.gameye.yml` sets `SCRAPYARD_DEV_DEFAULT_KEYS=1`, which lets the image start on Nakama's defaults: use it only on your own machine.
+
 ## Run it locally
 
 `scripts/gameye-up.sh` takes you from a clone to a match on your own Gameye account. It sets up your Gameye application and tag, builds and starts Nakama with the plugin (plus Postgres), and starts the relay and the page on your machine. The game servers run on Gameye.
@@ -266,7 +283,7 @@ scripts/gameye-up.sh --push-game-image   # first run, or after changing game/
 scripts/gameye-up.sh                     # later runs, same commit
 ```
 
-The script waits until Gameye has the tag in your region, then starts everything. Open `http://localhost:4173` and choose quick play. Open it in two windows to share a match; alone, you get a match with bots after 12 seconds.
+The script waits until Gameye has the tag in your region, then starts everything. Open `http://localhost:4173` and choose quick play. Open it in a second browser or a private window to share a match: windows of one browser are one guest. Alone, you get a match with bots after 12 seconds.
 
 Ctrl-C stops the page and the relay. Nakama and Postgres keep running until:
 
@@ -274,7 +291,7 @@ Ctrl-C stops the page and the relay. Nakama and Postgres keep running until:
 scripts/gameye-up.sh --down
 ```
 
-Nakama's console is at `http://127.0.0.1:7351` (admin / password). `compose.gameye.yml` and upstream's `nakama/compose.yml` both publish port 7350, so run one at a time.
+Nakama's console is at `http://127.0.0.1:7351` (admin / password: `compose.gameye.yml` runs Nakama on its default keys, with `SCRAPYARD_DEV_DEFAULT_KEYS=1`). `compose.gameye.yml` and upstream's `nakama/compose.yml` both publish port 7350, so run one at a time.
 
 ### Troubleshooting
 

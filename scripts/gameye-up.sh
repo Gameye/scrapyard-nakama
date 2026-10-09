@@ -9,8 +9,9 @@
 #      or pulls NAKAMA_IMAGE, and starts it with Postgres (compose.gameye.yml);
 #   3. starts the relay (edge/, wrangler dev --env dev) and the page in
 #      Gameye mode, built from this checkout and served on PAGE_PORT.
-# Open the page, choose quick play: two windows share a match, one alone
-# gets a match with bots after 12 s. Ctrl-C stops the page and the relay;
+# Open the page, choose quick play: open it in a second browser or a private
+# window to share a match (windows of one browser are one guest); alone, you
+# get a match with bots after 12 s. Ctrl-C stops the page and the relay;
 # Nakama keeps running until --down.
 #
 # The page is a build, not Vite's dev server: the game server in the image is
@@ -319,6 +320,6 @@ trap 'kill 0' INT TERM
 WRANGLER_SEND_METRICS=false npx wrangler dev -c edge/wrangler.jsonc --env dev --ip 127.0.0.1 --port "$RELAY_PORT" &
 (cd game && npx vite preview --outDir dist-gameye --host localhost --port "$PAGE_PORT" --strictPort) &
 say ""
-say "Open http://localhost:$PAGE_PORT and choose quick play (open it in two windows to share a match)."
+say "Open http://localhost:$PAGE_PORT and choose quick play (open it in a second browser or a private window to share a match)."
 say "Relay: $RELAY_URL. Ctrl-C stops the page and the relay; scripts/gameye-up.sh --down stops Nakama."
 wait

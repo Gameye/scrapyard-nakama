@@ -380,6 +380,47 @@ func TestRetryAfterNoCapacityCanSucceed(t *testing.T) {
 	}
 }
 
+// A player whose solo session is on its way (goSolo takes the ticket back
+// without waiting) isn't put in a second session by the matchmaker.
+func TestMatchedSkipsAPlayerAlreadyStartingViaSolo(t *testing.T) {
+	fleet, nk := &fakeFleet{hold: make(chan struct{})}, newFakeNk()
+	m, logger := newTestMatches(fleet, nk)
+
+	_, _ = m.soloMatch(soloCtx("user-a"), logger, nil, nk, "")
+	_, _ = m.matched(context.Background(), logger, nil, nk, []runtime.MatchmakerEntry{gameyeEntry("user-a"), gameyeEntry("user-b")})
+	_, _ = m.matched(context.Background(), logger, nil, nk, []runtime.MatchmakerEntry{gameyeEntry("user-a")})
+	close(fleet.hold)
+
+	got := map[string]int{}
+	for range 2 {
+		got[nk.next(t).UserID]++
+	}
+	nk.none(t)
+	if got["user-a"] != 1 || got["user-b"] != 1 {
+		t.Errorf("notified %v, want user-a and user-b once each", got)
+	}
+	calls := fleet.createCalls()
+	if len(calls) != 2 || strings.Join(calls[1].userIds, ",") != "user-b" {
+		t.Errorf("Create calls = %+v, want user-a's solo session, then one for user-b alone", calls)
+	}
+}
+
+// One whose earlier match was announced has queued again, so the new match is
+// theirs: it starts, and the old assignment is no longer offered.
+func TestMatchedIncludesAPlayerWhoQueuedAgain(t *testing.T) {
+	fleet, nk := &fakeFleet{}, newFakeNk()
+	m, logger := newTestMatches(fleet, nk)
+
+	_, _ = m.soloMatch(soloCtx("user-a"), logger, nil, nk, "")
+	nk.next(t)
+	_, _ = m.matched(context.Background(), logger, nil, nk, []runtime.MatchmakerEntry{gameyeEntry("user-a"), gameyeEntry("user-b")})
+	nk.next(t)
+	nk.next(t)
+	if calls := fleet.createCalls(); len(calls) != 2 {
+		t.Errorf("%d Create calls, want 2", len(calls))
+	}
+}
+
 func TestUnannouncedSessionIsStopped(t *testing.T) {
 	fleet, nk := &fakeFleet{}, newFakeNk()
 	nk.failMatch = true
@@ -425,14 +466,14 @@ func TestSoloMatchStartsASessionForTheCaller(t *testing.T) {
 	}
 }
 
-func TestSoloMatchReturnsTheLiveAssignment(t *testing.T) {
+func TestSoloMatchResumeReturnsTheLiveAssignmentOnce(t *testing.T) {
 	fleet, nk := &fakeFleet{}, newFakeNk()
 	m, logger := newTestMatches(fleet, nk)
 
 	_, _ = m.soloMatch(soloCtx("user-a"), logger, nil, nk, "")
 	sent := nk.next(t)
 
-	reply, err := m.soloMatch(soloCtx("user-a"), logger, nil, nk, "")
+	reply, err := m.soloMatch(soloCtx("user-a"), logger, nil, nk, soloResume)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -449,6 +490,57 @@ func TestSoloMatchReturnsTheLiveAssignment(t *testing.T) {
 	nk.none(t)
 	if calls := fleet.createCalls(); len(calls) != 1 {
 		t.Errorf("%d Create calls, want 1", len(calls))
+	}
+
+	// Replayed once: a second resume finds nothing to hand back, and starts a session.
+	if reply, _ := m.soloMatch(soloCtx("user-a"), logger, nil, nk, soloResume); reply != `{"status":"starting"}` {
+		t.Errorf("second resume = %s, want starting", reply)
+	}
+	nk.next(t)
+	if calls := fleet.createCalls(); len(calls) != 2 {
+		t.Errorf("%d Create calls, want 2", len(calls))
+	}
+}
+
+// A player who used their match (or left it) and searches again gets a new
+// session, not the old one, though its tokens are still good.
+func TestFreshSoloMatchAfterAnAssignmentStartsANewSession(t *testing.T) {
+	fleet, nk := &fakeFleet{}, newFakeNk()
+	m, logger := newTestMatches(fleet, nk)
+
+	_, _ = m.soloMatch(soloCtx("user-a"), logger, nil, nk, "")
+	first := nk.next(t)
+
+	for _, payload := range []string{"", "{}"} {
+		reply, err := m.soloMatch(soloCtx("user-a"), logger, nil, nk, payload)
+		if err != nil || reply != `{"status":"starting"}` {
+			t.Fatalf("fresh solo (%q) = (%s, %v), want starting", payload, reply, err)
+		}
+		n := nk.next(t)
+		if n.Subject != "gameye_match" || n.Content["session_id"] == first.Content["session_id"] {
+			t.Errorf("notification = %v for %v, want gameye_match for a new session", n.Subject, n.Content["session_id"])
+		}
+	}
+	if calls := fleet.createCalls(); len(calls) != 3 {
+		t.Errorf("%d Create calls, want 3", len(calls))
+	}
+
+	// The fresh call dropped the old assignment: a resume now gets the newest.
+	reply, _ := m.soloMatch(soloCtx("user-a"), logger, nil, nk, soloResume)
+	if !strings.Contains(reply, `"session_id":"session-3"`) {
+		t.Errorf("resume = %s, want session-3", reply)
+	}
+}
+
+func TestSoloMatchRefusesAPayloadItCantRead(t *testing.T) {
+	fleet, nk := &fakeFleet{}, newFakeNk()
+	m, logger := newTestMatches(fleet, nk)
+
+	if _, err := m.soloMatch(soloCtx("user-a"), logger, nil, nk, "not json"); err == nil {
+		t.Error("an unreadable payload was accepted")
+	}
+	if calls := fleet.createCalls(); len(calls) != 0 {
+		t.Errorf("%d Create calls, want 0", len(calls))
 	}
 }
 

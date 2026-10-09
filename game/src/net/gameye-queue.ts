@@ -43,6 +43,7 @@ const HELLO_TOKEN = 'gameye' // the hello's Nakama session field: the container 
 export const MATCH_CODE = 7300
 export const FAILED_CODE = 7301
 export const SOLO_RPC = 'gameye_solo_match'
+export const SOLO_RESUME = '{"resume":true}' // the solo call of a search whose socket came back: the plugin may hand back the match it missed
 export const PLAYERS = { min: 2, max: 8 }
 
 export const MESSAGES = {
@@ -226,7 +227,9 @@ export function createGameyeQueue(deps: QueueDeps) {
       return
     }
     if (!live(mine) || socket !== on) {
-      if (socket === on) void on.removeMatchmaker(made).catch(() => {})
+      // Ended (cancel, a match, a failure) or moved on while Nakama made it: nobody holds this ticket, so it goes
+      // (on a socket that has dropped since, the call fails and the ticket went with it anyway).
+      void on.removeMatchmaker(made).catch(() => {})
       return
     }
     ticket = made
@@ -242,13 +245,14 @@ export function createGameyeQueue(deps: QueueDeps) {
     if (ticket) void on.removeMatchmaker(ticket).catch(() => {})
     ticket = null
     searching(MESSAGES.solo)
-    await askSolo(mine, on)
+    await askSolo(mine, on, false)
   }
 
-  async function askSolo(mine: number, on: QueueSocket) {
+  // A fresh call always gets a new match; a resume may get the one this search missed while away.
+  async function askSolo(mine: number, on: QueueSocket, resume: boolean) {
     let reply: { status?: unknown; match?: unknown }
     try {
-      reply = JSON.parse((await on.rpc(SOLO_RPC)).payload || '{}')
+      reply = JSON.parse((await (resume ? on.rpc(SOLO_RPC, SOLO_RESUME) : on.rpc(SOLO_RPC))).payload || '{}')
     } catch {
       if (live(mine) && socket === on) fail(MESSAGES.unreachable)
       return
@@ -263,7 +267,7 @@ export function createGameyeQueue(deps: QueueDeps) {
     let listed: Notification[] = []
     try {
       listed = await deps.notifications()
-    } catch {} // can't list: search again; the plugin answers a second solo call with the match it has
+    } catch {} // can't list: search again; the plugin answers a resumed solo call with the match it has
     if (!live(mine) || socket !== on) return
     const now = clock.unix()
     const found = listed
@@ -275,7 +279,7 @@ export function createGameyeQueue(deps: QueueDeps) {
     if (!solo) return enqueue(mine, on)
     stage = 'searching'
     searching()
-    await askSolo(mine, on)
+    await askSolo(mine, on, true)
   }
 
   // A match: the notification it came in is deleted (persistent, it would be found again), then the relay.

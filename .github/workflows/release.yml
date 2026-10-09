@@ -125,7 +125,8 @@ jobs:
             org.opencontainers.image.licenses=MIT
 
   site:
-    needs: ci
+    # after the images: release.json names them, so it's uploaded only once both are pushed
+    needs: [ci, images]
     if: vars.SITE_DOMAIN != '' && vars.API_DOMAIN != ''
     runs-on: ubuntu-latest
     timeout-minutes: 20

@@ -166,3 +166,32 @@ func TestMalformedTokensFail(t *testing.T) {
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+// The vectors the game server's check (game/server/gameye.check.ts, GO_SEAT and
+// GO_RELAY) and the relay's test (test/relay.test.mjs) hold their verifiers to:
+// a change in the format here fails this test, not production.
+func TestTokensMatchThePinnedVectors(t *testing.T) {
+	const (
+		secret    = "seat-secret-for-the-checks-0123456789abcdef"
+		sessionId = "sess-7f3a"
+		userId    = "2c1d0a9e-4b8f-4e5a-9d2b-6f1e3c7a8b90"
+		goSeat    = "v1.eyJ0Ijoic2VhdCIsInNpZCI6InNlc3MtN2YzYSIsInVpZCI6IjJjMWQwYTllLTRiOGYtNGU1YS05ZDJiLTZmMWUzYzdhOGI5MCIsImV4cCI6MTkwMDAwMDEyMH0.a7yRAQJas9T47fMSEosNo_vJJehS9Ff0htHI4AFaeWk"
+		goRelay   = "v1.eyJ0IjoicmVsYXkiLCJzaWQiOiJzZXNzLTdmM2EiLCJob3N0IjoiMS4yLjMuNCIsInBvcnQiOjczNjAsImV4cCI6MTkwMDAwMDEyMH0.FE8NCsPi_n-nq6cOIw871t59b6hsKBSeHc8UfMQxKFY"
+	)
+	issued := time.Unix(1_900_000_000, 0)
+
+	seat, err := signSeatToken([]byte(secret), sessionId, userId, issued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seat != goSeat {
+		t.Errorf("seat token = %v, want the pinned GO_SEAT %v", seat, goSeat)
+	}
+	relay, err := signRelayToken([]byte(secret), sessionId, "1.2.3.4", 7360, issued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relay != goRelay {
+		t.Errorf("relay token = %v, want the pinned GO_RELAY %v", relay, goRelay)
+	}
+}

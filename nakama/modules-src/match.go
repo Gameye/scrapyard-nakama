@@ -24,6 +24,10 @@ const (
 	// soloRpc starts a match for one player, with bots in the empty seats:
 	// Nakama's matchmaker won't take a ticket for fewer than two.
 	soloRpc = "gameye_solo_match"
+	// soloResume is the payload of a solo call that resumes the page's search
+	// (its socket dropped and came back): it may be handed the match it
+	// missed. A call with no payload is a fresh one.
+	soloResume = `{"resume":true}`
 
 	matchSubject  = fleetmanager.NotificationSubject // "gameye_match", code 7300
 	failedSubject = "gameye_failed"
@@ -68,7 +72,8 @@ type gameyeMatches struct {
 
 	mu sync.Mutex
 	// starting holds the players whose session is on its way; assigned, the
-	// last notification each player got, until its tokens expire.
+	// last notification each player got, until its tokens expire, a resume
+	// hands it back, or a fresh solo call starts another.
 	starting map[string]bool
 	assigned map[string]assignment
 }
@@ -113,25 +118,48 @@ func (m *gameyeMatches) matched(ctx context.Context, _ runtime.Logger, _ *sql.DB
 		}
 	}
 
+	// A player whose session is on its way (the solo RPC, called as the page
+	// takes its ticket back) isn't put in a second one. One holding an earlier
+	// match has queued again, so that match is no longer theirs to resume.
 	m.mu.Lock()
+	players := userIds[:0]
 	for _, userId := range userIds {
+		if m.starting[userId] {
+			continue
+		}
+		delete(m.assigned, userId)
 		m.starting[userId] = true
+		players = append(players, userId)
 	}
 	m.mu.Unlock()
+	if len(players) == 0 {
+		return "", nil
+	}
 
 	// The first ticket traces the Gameye session back to the matchmaker.
-	m.start(ctx, userIds, entries[0].GetTicket())
+	m.start(ctx, players, entries[0].GetTicket())
 	return "", nil
 }
 
 // soloMatch is the gameye_solo_match RPC. A caller whose match is on its way
-// gets {"status":"starting"} and nothing more starts; one whose tokens are
-// still good gets {"status":"matched","match":<the gameye_match content>};
-// anyone else gets a session of their own, and {"status":"starting"}.
-func (m *gameyeMatches) soloMatch(ctx context.Context, _ runtime.Logger, _ *sql.DB, _ runtime.NakamaModule, _ string) (string, error) {
+// gets {"status":"starting"} and nothing more starts. A resume (payload
+// soloResume: the page's socket came back mid-search) whose tokens are still
+// good gets {"status":"matched","match":<the gameye_match content>}, once. Any
+// other call, a fresh one (no payload) above all, gets a session of its own,
+// and {"status":"starting"}: an earlier match is never handed back to a new
+// search.
+func (m *gameyeMatches) soloMatch(ctx context.Context, _ runtime.Logger, _ *sql.DB, _ runtime.NakamaModule, payload string) (string, error) {
 	userId, _ := ctx.Value(runtime.RUNTIME_CTX_USER_ID).(string)
 	if userId == "" {
 		return "", runtime.NewError("a player's session is required", 16) // UNAUTHENTICATED
+	}
+	var call struct {
+		Resume bool `json:"resume"`
+	}
+	if payload != "" {
+		if err := json.Unmarshal([]byte(payload), &call); err != nil {
+			return "", runtime.NewError(`the payload is none or {"resume":true}`, 3) // INVALID_ARGUMENT
+		}
 	}
 
 	m.mu.Lock()
@@ -139,7 +167,9 @@ func (m *gameyeMatches) soloMatch(ctx context.Context, _ runtime.Logger, _ *sql.
 		m.mu.Unlock()
 		return `{"status":"starting"}`, nil
 	}
-	if a, ok := m.assigned[userId]; ok && !m.now().After(a.exp) {
+	if call.Resume && m.holds(userId) {
+		a := m.assigned[userId]
+		delete(m.assigned, userId) // replayed: the page follows it now
 		m.mu.Unlock()
 		reply, err := json.Marshal(map[string]any{"status": "matched", "match": a.content})
 		if err != nil {
@@ -147,11 +177,19 @@ func (m *gameyeMatches) soloMatch(ctx context.Context, _ runtime.Logger, _ *sql.
 		}
 		return string(reply), nil
 	}
+	delete(m.assigned, userId)
 	m.starting[userId] = true
 	m.mu.Unlock()
 
 	m.start(ctx, []string{userId}, "solo-"+userId)
 	return `{"status":"starting"}`, nil
+}
+
+// holds: the player has an assignment whose tokens are still good. Call with
+// mu held.
+func (m *gameyeMatches) holds(userId string) bool {
+	a, ok := m.assigned[userId]
+	return ok && !m.now().After(a.exp)
 }
 
 // start asks the fleet manager for a session, then retries or announces from

@@ -8,7 +8,7 @@
 // node src/net/gameye-match.check.ts
 import type { Notification } from '@heroiclabs/nakama-js'
 import { matchmakerPlugin } from '../../matchmaker.ts'
-import { createGameyeQueue, CONNECT_WINDOW, MESSAGES, SEARCH_LIMIT, SOLO_AFTER, SOLO_RPC, ticketProperties, ticketQuery, type QueueSocket } from './gameye-queue.ts'
+import { createGameyeQueue, CONNECT_WINDOW, MESSAGES, SEARCH_LIMIT, SOLO_AFTER, SOLO_RESUME, SOLO_RPC, ticketProperties, ticketQuery, type QueueSocket } from './gameye-queue.ts'
 import { BUILD, PROTOCOL } from './protocol.ts'
 
 let checks = 0
@@ -52,7 +52,7 @@ function fakeClock(start = 1_700_000_000_000) {
 // --- a fake Nakama socket ------------------------------------------------------------------------
 
 function fakeSocket(rpcReply: () => string = () => '{"status":"starting"}') {
-  const calls = { add: [] as Array<{ query: string; min: number; max: number; strings?: Record<string, string> }>, remove: [] as string[], rpc: [] as string[] }
+  const calls = { add: [] as Array<{ query: string; min: number; max: number; strings?: Record<string, string> }>, remove: [] as string[], rpc: [] as string[], payloads: [] as Array<string | undefined> }
   let tickets = 0
   const socket: QueueSocket & { calls: typeof calls; notify: (n: Notification) => void } = {
     calls,
@@ -63,8 +63,9 @@ function fakeSocket(rpcReply: () => string = () => '{"status":"starting"}') {
     async removeMatchmaker(ticket) {
       calls.remove.push(ticket)
     },
-    async rpc(id) {
+    async rpc(id, payload) {
       calls.rpc.push(id ?? '')
+      calls.payloads.push(payload)
       return { id, payload: rpcReply() }
     },
     onnotification: () => {},
@@ -232,6 +233,39 @@ const last = () => opened.at(-1)!
   check(queue.currentSearch().phase === 'idle' && opened.length === 1, 'a match notification with no search on is ignored')
 }
 
+// Cancel while the ticket is still being made: once Nakama answers, that ticket is taken back too.
+{
+  const { queue, socket } = setup()
+  let answer: (made: { ticket: string }) => void = () => {}
+  socket().addMatchmaker = (query, min, max, strings) => {
+    socket().calls.add.push({ query, min, max, strings })
+    return new Promise((resolve) => (answer = resolve))
+  }
+  void queue.findMatch('ffa', 'scrapyard', LOADOUT)
+  await flush()
+  check(socket().calls.add.length === 1 && queue.currentSearch().phase === 'connecting', 'Play: the ticket is on its way')
+  queue.cancelSearch()
+  await flush()
+  check(queue.currentSearch().phase === 'idle' && socket().calls.remove.length === 0, 'cancelled before Nakama answered: no ticket to take back yet')
+  answer({ ticket: 'ticket-late' })
+  await flush()
+  check(socket().calls.remove.includes('ticket-late'), `the ticket made after the cancel is removed (${JSON.stringify(socket().calls.remove)})`)
+  check(queue.currentSearch().phase === 'idle', 'and the store stays idle')
+}
+
+// A tab with no search on (it cancelled, or never searched) ignores a gameye_match: another tab of the player may be the one searching.
+{
+  const { clock, queue, socket } = setup()
+  void queue.findMatch('ffa', 'scrapyard', LOADOUT)
+  await flush()
+  queue.cancelSearch()
+  await flush()
+  const opens = opened.length
+  socket().notify(matchNote(match(clock.unix())))
+  await flush()
+  check(opened.length === opens && queue.currentSearch().phase === 'idle', 'a cancelled tab doesn’t follow a gameye_match')
+}
+
 // --- 12 s alone: the ticket goes and the solo RPC is called -------------------------------------------
 
 {
@@ -242,6 +276,7 @@ const last = () => opened.at(-1)!
   check(socket().calls.rpc.length === 0 && socket().calls.remove.length === 0, 'nothing before 12 s: a pair can still match')
   await clock.advance(100)
   check(socket().calls.remove[0] === 'ticket-1' && socket().calls.rpc[0] === SOLO_RPC, '12 s alone: the ticket is removed and gameye_solo_match called')
+  check(socket().calls.payloads[0] === undefined, 'a fresh solo call has no payload: the plugin starts a new match, never an old one')
   const now = queue.currentSearch()
   check(now.phase === 'searching' && !!now.note, 'still searching, saying a match with bots is on its way')
   socket().notify(matchNote(match(clock.unix())))
@@ -265,6 +300,24 @@ const last = () => opened.at(-1)!
   last().welcome()
   await flush()
   queue.takeSeat()?.close()
+}
+
+// The socket dropping after the solo call, and nothing in the persistent list: the solo call again, as a resume.
+{
+  const clock0 = fakeClock()
+  const { clock, queue, socket, swap } = setup()
+  void queue.findMatch('ffa', 'scrapyard', LOADOUT)
+  await flush()
+  await clock.advance(SOLO_AFTER)
+  swap(null)
+  await flush()
+  swap(fakeSocket(() => JSON.stringify({ status: 'matched', match: match(clock0.unix(), { relay_token: 'resumed-relay' }) })))
+  await flush()
+  check(socket().calls.rpc[0] === SOLO_RPC && socket().calls.payloads[0] === SOLO_RESUME, `back on a socket after going solo: the solo call says it resumes (${socket().calls.payloads[0]})`)
+  check(socket().calls.add.length === 0, 'and no new ticket')
+  check(queue.currentSearch().phase === 'connecting' && last().url.endsWith('token=resumed-relay'), 'the match it was handed is followed')
+  queue.cancelSearch()
+  await flush()
 }
 
 // --- relay upgrades that keep failing: 15 s, then the unreachable message ------------------------------

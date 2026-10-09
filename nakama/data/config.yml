@@ -10,7 +10,6 @@ socket:
 session:
   token_expiry_sec: 7200
   refresh_token_expiry_sec: 2592000 # 30 days: a www login lasts between visits (Nakama's default, 1 h, is shorter than the token)
-  single_socket: true # one socket a player: the Gameye match notification goes to one page, and a matchmaker ticket dies with its socket
 
 # Gameye matches (modules-src): a pair can match at its minimum within about
 # 10 s (5 intervals of 2 s), before the page's 12 s solo timer fires.
