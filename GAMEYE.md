@@ -234,13 +234,8 @@ Or put them all in the second config file named by `NAKAMA_CONFIG_EXTRA`; the im
 - A Gameye account ([trial.gameye.com](https://trial.gameye.com/)) and an API token with all six scopes listed above.
 - Node 24 or later, npm, git and curl.
 - Docker or Podman, running, with `compose`.
-- A checkout of the Fleet Manager beside this repo:
 
-  ```sh
-  git clone https://github.com/Gameye/nakama-fleetmanager ../nakama-fleetmanager
-  ```
-
-  Until `github.com/Gameye/nakama-fleetmanager` v0.1.0 is published, [`nakama/modules-src/go.mod`](nakama/modules-src/go.mod) replaces it with that local checkout. Set `FLEETMANAGER_DIR` in `.env.gameye` if yours is somewhere else.
+The plugin requires `github.com/Gameye/nakama-fleetmanager` v0.1.0 ([`nakama/modules-src/go.mod`](nakama/modules-src/go.mod)); the image build downloads it, so you don't need a checkout of the Fleet Manager.
 
 ### Settings
 
@@ -254,10 +249,7 @@ Only `GAMEYE_API_TOKEN` is required. Everything else has a default, shown in the
 
 By default Gameye pulls the image this repository publishes, `ghcr.io/gameye/scrapyard-nakama`, at the tag of the commit you have checked out (`sha-<commit>`). The page built on your machine and the image must come from the same commit, or the game server refuses the page.
 
-That default doesn't work yet, for two reasons:
-
-- Gameye's GHCR integration currently refuses an image whose GitHub owner isn't your Gameye organization's name, with `409` "GHCR repository owner does not match the application organization". A fix is pending.
-- [`release.yml`](.github/workflows/release.yml) can't build the Nakama image while `go.mod` still has the local replace, so it publishes no images until Fleet Manager v0.1.0 is out.
+That default doesn't work yet: Gameye's GHCR integration currently refuses an image whose GitHub owner isn't your Gameye organization's name, with `409` "GHCR repository owner does not match the application organization". A fix is pending.
 
 Until then, build the game server image yourself and push it to a public Docker Hub repository of your own. In `.env.gameye`:
 
@@ -303,7 +295,6 @@ Nakama's console is at `http://127.0.0.1:7351` (admin / password: `compose.gamey
 | `Gameye can't find <image>:<tag> (404)` | The tag isn't in the registry. Use `--push-game-image`, or set `GAMEYE_GAME_TAG` to a published tag. |
 | `tag ... still isn't ready in <region> after 900 s` | Gameye is still pulling the image into the region. Run the script again to keep waiting (`GAMEYE_TAG_WAIT` sets the limit in seconds), or check the image in Gameye's dashboard. |
 | `GAMEYE_GAME_TAG isn't this checkout's commit` or `game/ has uncommitted changes` | The page you build won't match the image, and the game server will refuse it ("Game updated"). Commit, then use `--push-game-image`. |
-| `no Fleet Manager checkout at ../nakama-fleetmanager` | Clone it beside this repo, or set `FLEETMANAGER_DIR`. |
 | `port 4173 is taken` / `port 8790 is taken` | Set `PAGE_PORT` or `RELAY_PORT` in `.env.gameye`. |
 | The page says "The Gameye demo is unavailable right now" | The plugin got `quota_exceeded` or `misconfigured` (401, 403 or 404 when starting a session). Check Nakama's logs: `docker compose -f compose.gameye.yml logs nakama`. |
 | The page says "Couldn’t reach the match server" | No session within 20 s, no capacity, Gameye unavailable, or the relay couldn't reach the container within 15 s. If Nakama's logs say the session is ready, look at the relay's output and the session's logs in Gameye's dashboard. |

@@ -1,3 +1,5 @@
+github.com/Gameye/nakama-fleetmanager v0.1.0 h1:8J0Ai6P8nuR3iZpatZEbKHy4oKqloAatgkuvCE1Sk7k=
+github.com/Gameye/nakama-fleetmanager v0.1.0/go.mod h1:1gEkeEjJa09oZhiHJ9YPu+VTAGqvXLYrMLt/gbL9fkc=
 github.com/RaveNoX/go-jsoncommentstrip v1.0.0/go.mod h1:78ihd09MekBnJnxpICcwzCMzGrKSKYe4AqU6PDYYpjk=
 github.com/apapsch/go-jsonmerge/v2 v2.0.0 h1:axGnT1gRIfimI7gJifB699GoE/oq+F2MU7Dml6nw9rQ=
 github.com/apapsch/go-jsonmerge/v2 v2.0.0/go.mod h1:lvDnEdqiQrp0O42VQGgmlKpxL1AP2+08jFMw88y4klk=

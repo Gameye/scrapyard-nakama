@@ -64,7 +64,6 @@ GAMEYE_GAME_REGISTRY=${GAMEYE_GAME_REGISTRY:-ghcr}
 GAMEYE_TAG_WAIT=${GAMEYE_TAG_WAIT:-900}
 PAGE_PORT=${PAGE_PORT:-4173}
 RELAY_PORT=${RELAY_PORT:-8790}
-FLEETMANAGER_DIR=${FLEETMANAGER_DIR:-../nakama-fleetmanager}
 CONTAINER=${CONTAINER:-$(command -v docker >/dev/null 2>&1 && echo docker || echo podman)}
 case $GAMEYE_GAME_REGISTRY in
   ghcr) GAMEYE_GAME_IMAGE=${GAMEYE_GAME_IMAGE:-ghcr.io/gameye/scrapyard-nakama} ;;
@@ -269,13 +268,7 @@ fi
 
 if [ -z "${NAKAMA_IMAGE:-}" ]; then
   NAKAMA_IMAGE=scrapyard-nakama-backend:local
-  build=(build -f nakama/Dockerfile -t "$NAKAMA_IMAGE")
-  # TODO: drop with the replace in go.mod once nakama-fleetmanager v0.1.0 is published
-  if grep -q '^replace github.com/Gameye/nakama-fleetmanager' nakama/modules-src/go.mod; then
-    dry || [ -f "$FLEETMANAGER_DIR/go.mod" ] || die "no Fleet Manager checkout at $FLEETMANAGER_DIR: clone github.com/Gameye/nakama-fleetmanager beside this repo, or set FLEETMANAGER_DIR"
-    build+=(--build-context "fleetmanager=$FLEETMANAGER_DIR")
-  fi
-  run "$CONTAINER" "${build[@]}" .
+  run "$CONTAINER" build -f nakama/Dockerfile -t "$NAKAMA_IMAGE" .
 else
   run "$CONTAINER" pull "$NAKAMA_IMAGE"
 fi
