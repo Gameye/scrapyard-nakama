@@ -1,0 +1,12 @@
+{
+  "name": "scrapyard-nakama-edge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "relay:dev": "wrangler dev -c edge/wrangler.jsonc --env dev",
+    "relay:deploy": "wrangler deploy -c edge/wrangler.jsonc --env=\"\""
+  },
+  "devDependencies": { "miniflare": "5.20260926.1-alpha", "wrangler": "4.144.0", "ws": "8.18.3" },
+  "engines": { "node": ">=24" }
+}

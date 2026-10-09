@@ -1,5 +1,18 @@
 # Browser-based Multiplayer Vehicle Combat
 
+## Gameye fork
+
+This is [Gameye](https://gameye.com)'s fork of Scrapyard by A. A. Sumitro
+([aasumitro/bbmvc](https://github.com/aasumitro/bbmvc), MIT). It adds one thing: quick play
+matched by Nakama's matchmaker, with each match on a dedicated game server in its own Gameye
+session, started through the [Gameye Fleet Manager for
+Nakama](https://github.com/Gameye/nakama-fleetmanager). Custom lobbies, accounts and replays
+work as upstream's do.
+
+[`GAMEYE.md`](GAMEYE.md) walks through it: what happens when you press Play, the Nakama plugin
+code, the tokens, the Gameye settings, and `scripts/gameye-up.sh`, which runs it locally on
+your own Gameye account. The rest of this README is upstream's; upstream's GCP deploy workflow (`deploy.yml`) is off in this fork.
+
 <p align="center">
   <img src=".github/assets/gameplay.gif" width="480" alt="Scrapyard gameplay: a war rig with a roof minigun fighting through the streets of The City in Team Deathmatch" />
 </p>

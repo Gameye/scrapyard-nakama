@@ -7,11 +7,12 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "check": "node src/game/ai.check.ts && node src/game/bots.check.ts && node src/game/ffa/ffa.check.ts && node src/game/tdm/tdm.check.ts && node src/game/simulation.check.ts && node src/game/loading.check.ts && node src/net/protocol.check.ts && node src/net/chat.check.ts && node server/matchmaker.check.ts && node server/custom.check.ts && node server/fairplay.check.ts && npm run server:check",
+    "check": "node src/game/ai.check.ts && node src/game/bots.check.ts && node src/game/ffa/ffa.check.ts && node src/game/tdm/tdm.check.ts && node src/game/simulation.check.ts && node src/game/loading.check.ts && node src/game/linkEnd.check.ts && node src/net/protocol.check.ts && node src/net/chat.check.ts && node src/net/gameye-match.check.ts && node server/matchmaker.check.ts && node server/custom.check.ts && node server/fairplay.check.ts && npm run server:check",
     "preview": "vite preview",
     "server": "npm run server:build && node dist-server/main.js",
+    "server:gameye": "npm run server:build && node dist-server/gameye-main.js",
     "server:build": "vite build --config vite.server.config.ts",
-    "server:check": "npm run server:build && node --expose-gc dist-server/arena.check.js && node dist-server/server.check.js && node --experimental-webstorage dist-server/client.check.js && node dist-server/netplay.check.js"
+    "server:check": "npm run server:build && node --expose-gc dist-server/arena.check.js && node dist-server/server.check.js && node --experimental-webstorage dist-server/client.check.js && node dist-server/netplay.check.js && node dist-server/gameye.check.js"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.20.0",

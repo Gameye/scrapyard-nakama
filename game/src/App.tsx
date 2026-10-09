@@ -115,6 +115,13 @@ function App() {
           setSeat(null)
           setScreen('garage')
         }}
+        onQuickPlay={() => {
+          // A Gameye build's Play again (GameCanvas): this session's seat let go, a new search from the arena screen, as its Play does.
+          seat?.close()
+          setSeat(null)
+          setScreen('map-select')
+          void findMatch(pick.mode, pick.map, loadout)
+        }}
       />
     )
   else content = <MainMenu onPlay={() => setScreen('map-select')} onGarage={() => setScreen('garage')} />

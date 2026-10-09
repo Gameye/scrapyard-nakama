@@ -1,13 +1,15 @@
 import type { Loadout } from '../game/loadout'
-import { BUILD, PROTOCOL, readServer, type ErrorCode, type ServerMessage, type Welcome } from './protocol'
+import { BUILD, PROTOCOL, readServer, type ErrorCode, type ServerMessage, type Welcome } from './protocol.ts'
 
 // The browser's end of the match socket: open it, say hello with the
 // player's session, wait for a seat (or the reason there isn't one), then
 // keep what the server says until the match takes it, ping it now and then
 // for the round trip, and say goodbye on the way out. The server's address:
 // VITE_GAME_SERVER when set; else, in development, port 7360 on the page's
-// own host; else /match on the page's own origin (Caddy passes it on). Runs
-// in Node too (the checks connect through it, with an address of their own).
+// own host; else /match on the page's own origin (Caddy passes it on). A
+// Gameye match has an address of its own: its relay, with the match's relay
+// token (gameye-queue.ts). Runs in Node too (the checks connect through it,
+// with an address of their own).
 
 const TIMEOUT = 5000 // ms to open, and again to be seated
 const PING = 2000
@@ -24,7 +26,8 @@ export const REASONS = {
   lost: 'Lost the connection to the game server',
 }
 
-export function gameServerUrl() {
+export function gameServerUrl(relay?: { url: string; token: string }) {
+  if (relay) return `${relay.url.replace(/\/+$/, '')}/match?token=${encodeURIComponent(relay.token)}`
   const set = import.meta.env.VITE_GAME_SERVER as string | undefined
   if (set) return set
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
@@ -59,6 +62,7 @@ export interface Hello {
   mode?: string // with a map: a seat at once (the checks' way in); neither: a matchmaking session (matchmaking.ts)
   map?: string
   loadout: Loadout
+  seat?: string // a Gameye match's seat token (root AGENTS.md, Contracts): its game server seats only that
 }
 
 // Who is playing (their session), from which build, with what gun.

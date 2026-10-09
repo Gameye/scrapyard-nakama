@@ -1,4 +1,4 @@
-# Deploy to the staging server once CI has passed on a push to main: build the
+# (Upstream, disabled here: see `on` below.) Deploy to the staging server once CI has passed on a push to main: build the
 # site (static files, the game inside at /play) and the game server, upload
 # them, switch the server to them, then smoke-test the site, Nakama and an
 # online match from outside.
@@ -25,11 +25,14 @@
 # /etc/sudoers.d/scrapyard-deploy lets the service account's login (sa_<uniqueId>) run commands as DEPLOY_USER only.
 # The server holds ~/scrapyard/deploy/.env (deploy/.env.example).
 name: deploy
+# Disabled in this fork (scrapyard-nakama, the Gameye reference): it rolls
+# upstream's GCP staging VM, which this fork has no access to. The Gameye demo
+# is published by release.yml (both images and the site bundle, one commit)
+# and deployed to its own server by the Gameye deploy script. Only the trigger
+# changed, so upstream's edits to the job still merge: started by hand, the
+# job's condition (a successful ci run) is false and it is skipped.
 on:
-  workflow_run:
-    workflows: [ci]
-    types: [completed]
-    branches: [main]
+  workflow_dispatch:
 
 permissions: {}
 

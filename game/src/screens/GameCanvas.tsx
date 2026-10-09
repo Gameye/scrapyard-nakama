@@ -10,6 +10,7 @@ import type { Mode } from '../game/modes'
 import { startGame } from '../game/runtime'
 import { createChat, type Chat } from '../net/chat'
 import { NetError, type Link } from '../net/connection'
+import { GAMEYE_BUILD } from '../net/gameye-build'
 import { settings, updateSettings } from '../game/settings'
 import { ChatBox } from '../hud/Chat'
 import { Hud, type HudHandle } from '../hud/Hud'
@@ -27,6 +28,7 @@ interface GameCanvasProps {
   difficulty: Difficulty // the bots' (practice)
   link: Link | null // online: the seat matchmaking found (its room's arena and mode); null: practice
   onExit: () => void
+  onQuickPlay?: () => void // a Gameye build's results: Play again searches anew (net/gameye-build.ts)
 }
 
 // The gameplay screen. It starts the game runtime (game/runtime.ts) in its
@@ -37,9 +39,11 @@ interface GameCanvasProps {
 // count down to the next match, and a lost connection says so; a failed
 // start can't be retried (the seat is gone with it), only left. A custom
 // lobby's match leaves for the lobby's waiting room instead (App moves there
-// on the server's word).
-export function GameCanvas({ loadout, mode, map, difficulty, link, onExit }: GameCanvasProps) {
+// on the server's word). A Gameye build's quick play match is its session's
+// only one: its results offer Play again (onQuickPlay) instead.
+export function GameCanvas({ loadout, mode, map, difficulty, link, onExit, onQuickPlay }: GameCanvasProps) {
   const online = link !== null
+  const quickPlay = GAMEYE_BUILD && online && !link.welcome.lobby ? onQuickPlay : undefined // the results' Play again
   const people = link?.welcome.lineUp.filter((seat) => seat.human).length ?? 0
   const custom = useCustom()
   const lobby = link?.welcome.lobby && custom.phase === 'seated' ? custom.lobby : null // a custom lobby's match: its lobby as it stands
@@ -246,7 +250,7 @@ export function GameCanvas({ loadout, mode, map, difficulty, link, onExit }: Gam
           <SettingsPanel />
         </Drawer>
       )}
-      {(phase === 'victory' || phase === 'defeat') && match && <Results match={match} lobby={lobby} onPlayAgain={restart} onExit={onExit} />}
+      {(phase === 'victory' || phase === 'defeat') && match && <Results match={match} lobby={lobby} onPlayAgain={quickPlay ?? restart} onExit={onExit} quickPlay={!!quickPlay} />}
       {phase === 'lost' && match && <Lost reason={match.lost} onExit={onExit} />}
       {/* leaving a match still in progress asks first; after the result it's a plain exit */}
       {leaving &&

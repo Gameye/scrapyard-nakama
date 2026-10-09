@@ -15,13 +15,17 @@ import { Menu } from './Menu'
 // garage instead; a custom lobby's match, the countdown back to its waiting
 // room, Back to lobby, and the lobby's tally with this result in it. Free
 // for all gets the full record; team deathmatch the team score, the MVP and
-// both rosters. Sections rise in one after another.
+// both rosters. Sections rise in one after another. A Gameye build's quick
+// play match is its session's only one (net/gameye-build.ts): Play again
+// searches anew, and Exit to garage. A link that ended during the results
+// leaves them up (game/linkEnd.ts) with why in place of the countdown.
 
 interface ResultsProps {
   match: Match
   lobby?: LobbyView | null // a custom lobby's match: its lobby
   onPlayAgain: () => void
   onExit: () => void
+  quickPlay?: boolean // online, a Gameye session's one match: Play again is a new search (onPlayAgain), no next match here
 }
 
 type Tone = 'win' | 'loss' | 'draw'
@@ -87,7 +91,7 @@ function winnerKey(match: Match, lobby: LobbyView) {
   return slot?.kind === 'person' ? slot.uid : slot?.kind === 'bot' ? `bot:${ffa.winner}` : undefined
 }
 
-export function Results({ match, lobby, onPlayAgain, onExit }: ResultsProps) {
+export function Results({ match, lobby, onPlayAgain, onExit, quickPlay }: ResultsProps) {
   const { tone, title, line, badge, badgeLabel, note } = verdict(match)
   const colors = TONES[tone]
   return (
@@ -127,12 +131,12 @@ export function Results({ match, lobby, onPlayAgain, onExit }: ResultsProps) {
                 </div>
               </div>
             )}
-            {match.online && <NextMatch match={match} what={lobby ? 'Back to the lobby' : 'Next match'} />}
+            {match.online && !quickPlay && <NextMatch match={match} what={lobby ? 'Back to the lobby' : 'Next match'} />}
             <Choices
               options={
                 lobby
                   ? [{ label: 'Back to lobby', action: onExit }]
-                  : match.online
+                  : match.online && !quickPlay
                   ? [{ label: 'Back to garage', action: onExit }]
                   : [
                       { label: 'Play again', action: onPlayAgain },
@@ -149,17 +153,22 @@ export function Results({ match, lobby, onPlayAgain, onExit }: ResultsProps) {
 }
 
 // Online: the room starts its next match by itself (a custom lobby's goes back to its waiting room); the seconds until it does.
+// A link that ended meanwhile brings no next match: why it ended instead.
 function NextMatch({ match, what }: { match: Match; what: string }) {
-  const [left, setLeft] = useState(() => match.nextIn())
+  const [line, setLine] = useState(() => nextLine(match, what))
   useEffect(() => {
-    const timer = setInterval(() => setLeft(match.nextIn()), 250)
+    const timer = setInterval(() => setLine(nextLine(match, what)), 250)
     return () => clearInterval(timer)
-  }, [match])
+  }, [match, what])
   return (
     <p className="animate-rise font-display text-lg text-neutral-200 italic motion-reduce:animate-none" style={rise(8)}>
-      {left < Infinity ? `${what} in ${Math.ceil(left)} s` : `${what} soon`}
+      {line}
     </p>
   )
+}
+function nextLine(match: Match, what: string) {
+  const left = match.nextIn()
+  return match.lost || (left < Infinity ? `${what} in ${Math.ceil(left)} s` : `${what} soon`)
 }
 
 function Tile({ label, value, hot, step }: { label: string; value: ReactNode; hot?: boolean; step: number }) {
