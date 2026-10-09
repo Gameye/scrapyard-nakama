@@ -46,15 +46,6 @@ jobs:
         with:
           persist-credentials: false
 
-      # TODO: remove with the replace in go.mod once github.com/Gameye/nakama-fleetmanager v0.1.0 is published.
-      # Until then nakama/Dockerfile needs the checkout as a build context, which CI doesn't have.
-      - name: The Fleet Manager comes from a published module
-        run: |
-          if grep -q '^replace github.com/Gameye/nakama-fleetmanager' nakama/modules-src/go.mod; then
-            echo "::error file=nakama/modules-src/go.mod::go.mod still replaces github.com/Gameye/nakama-fleetmanager with a local checkout: the Nakama image can't be built here. Publish nakama-fleetmanager v0.1.0, require it and drop the replace."
-            exit 1
-          fi
-
       # GHCR names are lowercase; the owner's may not be
       - name: Image names
         id: names
