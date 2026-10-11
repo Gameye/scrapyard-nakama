@@ -128,6 +128,14 @@ with no stored credentials (GitHub OIDC → GCP Workload Identity Federation →
 IAP). Its header lists the repository variables and secrets it needs; the server keeps its own
 settings in `deploy/.env` (`deploy/.env.example`).
 
+## About Gameye
+
+[Gameye](https://gameye.com/?utm_source=github&utm_medium=readme&utm_campaign=scrapyard-nakama) is a managed hosting platform for multiplayer game servers. You bring a container image, and Gameye starts a dedicated server for each match through one API.
+
+- Nakama guide: [gameye.com/docs/guides/integrations/nakama](https://gameye.com/docs/guides/integrations/nakama/?utm_source=github&utm_medium=readme&utm_campaign=scrapyard-nakama)
+- Gameye docs: [gameye.com/docs](https://gameye.com/docs/?utm_source=github&utm_medium=readme&utm_campaign=scrapyard-nakama)
+- Try it free: [trial.gameye.com](https://trial.gameye.com/?utm_source=github&utm_medium=readme&utm_campaign=scrapyard-nakama)
+
 ## License
 
 MIT — see `LICENSE`.
