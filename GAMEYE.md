@@ -235,7 +235,7 @@ Or put them all in the second config file named by `NAKAMA_CONFIG_EXTRA`; the im
 - Node 24 or later, npm, git and curl.
 - Docker or Podman, running, with `compose`.
 
-The plugin requires `github.com/Gameye/nakama-fleetmanager` v0.1.0 ([`nakama/modules-src/go.mod`](nakama/modules-src/go.mod)); the image build downloads it, so you don't need a checkout of the Fleet Manager.
+The plugin requires `github.com/Gameye/nakama-fleetmanager` v0.2.0 ([`nakama/modules-src/go.mod`](nakama/modules-src/go.mod)); the image build downloads it, so you don't need a checkout of the Fleet Manager.
 
 ### Settings
 
@@ -308,7 +308,7 @@ The relay deploys on its own with Wrangler; the commands are at the top of [`edg
 ## Limitations
 
 - **One region.** Every session starts in `GAMEYE_API_REGION`.
-- **No latency-based placement.** The Fleet Manager ignores player latencies. Choosing a region from Gameye's `/available-location` ping targets is follow-up work.
+- **No latency-based placement.** The Fleet Manager (v0.2.0) can pick a match's region from player latencies or a `gameye.region` metadata key, but the plugin passes neither, so it falls back to `GAMEYE_API_REGION`. Measuring latencies to Gameye's `/available-location` ping targets and passing them in is follow-up work.
 - **No backfill or rejoin.** A match is the players matched at the start, plus bots. A player whose socket drops can't get back into the match, and nobody new joins a running one.
 - **No spend caps.** Spending is bounded only by each session ending itself (after the match, when idle, or after 20 minutes) and by Gameye's TTL (30 minutes by default). There is no cap on concurrent sessions and no per-player rate limit.
 - **sslip.io in the relay.** Cloudflare Workers can't fetch a bare IP, so the relay turns the container's IP into a hostname under `sslip.io`, a public wildcard DNS service. Set `GAMEYE_IPV4_DNS_SUFFIX` to use your own wildcard zone.

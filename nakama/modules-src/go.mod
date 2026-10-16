@@ -3,7 +3,7 @@ module github.com/Gameye/scrapyard-nakama/nakama/modules-src
 go 1.27.1
 
 require (
-	github.com/Gameye/nakama-fleetmanager v0.1.0
+	github.com/Gameye/nakama-fleetmanager v0.2.0
 	// Must match the versions Nakama 3.41.0 is built with.
 	github.com/heroiclabs/nakama-common v1.48.0
 )
