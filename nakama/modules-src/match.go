@@ -23,6 +23,11 @@ const (
 	// geoProperty holds the player's geo token, on a ticket and in the solo
 	// RPC's payload.
 	geoProperty = "geo"
+	// regionProperty is the region a ticket queues in; pickProperty, set to
+	// pickYes, says its player picked that region rather than their nearest.
+	regionProperty = "region"
+	pickProperty   = "pick"
+	pickYes        = "1"
 
 	// soloRpc starts a match for one player, with bots in the empty seats:
 	// Nakama's matchmaker won't take a ticket for fewer than two.
@@ -32,8 +37,9 @@ const (
 	// missed. A call with no payload is a fresh one.
 	soloResume = `{"resume":true}`
 
-	// regionRpc answers the region a player's search queues in: the nearest
-	// enabled one to their geo token, else the fallback.
+	// regionRpc answers the region a player's search queues in (the picked
+	// one when it's enabled, else the nearest enabled one to their geo token,
+	// else the fallback) and the enabled regions.
 	regionRpc = "gameye_region"
 
 	matchSubject  = fleetmanager.NotificationSubject // "gameye_match", code 7300
@@ -118,10 +124,17 @@ func (m *gameyeMatches) matched(ctx context.Context, _ runtime.Logger, _ *sql.DB
 	}
 	userIds := make([]string, 0, len(entries))
 	geo := make(map[string]string, len(entries)) // each player's first geo token
+	regions := make([]string, 0, len(entries))
+	chosen := false
 	for _, entry := range entries {
 		properties := entry.GetProperties()
 		if mode, _ := properties[modeProperty].(string); mode != modeGameye {
 			return "", nil
+		}
+		region, _ := properties[regionProperty].(string)
+		regions = append(regions, region)
+		if pick, _ := properties[pickProperty].(string); pick == pickYes {
+			chosen = true
 		}
 		userId := entry.GetPresence().GetUserId()
 		if _, seen := geo[userId]; !seen {
@@ -154,14 +167,16 @@ func (m *gameyeMatches) matched(ctx context.Context, _ runtime.Logger, _ *sql.DB
 	for _, userId := range players {
 		latencies = append(latencies, m.estimates(userId, geo[userId])...)
 	}
+	forced, _ := pickedRegion(regions, chosen, m.regions)
 	// The first ticket traces the Gameye session back to the matchmaker.
-	m.start(ctx, players, latencies, entries[0].GetTicket())
+	m.start(ctx, players, latencies, entries[0].GetTicket(), forced)
 	return "", nil
 }
 
 // soloMatch is the gameye_solo_match RPC; its payload may carry the caller's
-// geo token beside resume, or alone. A caller whose match is on its way
-// gets {"status":"starting"} and nothing more starts. A resume (payload
+// geo token and the region they picked beside resume, or alone. A caller
+// whose match is on its way gets {"status":"starting"} and nothing more
+// starts. A resume (payload
 // soloResume: the page's socket came back mid-search) whose tokens are still
 // good gets {"status":"matched","match":<the gameye_match content>}, once. Any
 // other call, a fresh one (no payload) above all, gets a session of its own,
@@ -175,10 +190,11 @@ func (m *gameyeMatches) soloMatch(ctx context.Context, _ runtime.Logger, _ *sql.
 	var call struct {
 		Resume bool   `json:"resume"`
 		Geo    string `json:"geo"`
+		Region string `json:"region"`
 	}
 	if payload != "" {
 		if err := json.Unmarshal([]byte(payload), &call); err != nil {
-			return "", runtime.NewError(`the payload is none or {"resume":true,"geo":<token>}, either field optional`, 3) // INVALID_ARGUMENT
+			return "", runtime.NewError(`the payload is none or {"resume":true,"geo":<token>,"region":<id>}, every field optional`, 3) // INVALID_ARGUMENT
 		}
 	}
 
@@ -201,24 +217,33 @@ func (m *gameyeMatches) soloMatch(ctx context.Context, _ runtime.Logger, _ *sql.
 	m.starting[userId] = true
 	m.mu.Unlock()
 
-	m.start(ctx, []string{userId}, m.estimates(userId, call.Geo), "solo-"+userId)
+	forced, _ := pickedRegion([]string{call.Region}, call.Region != "", m.regions)
+	m.start(ctx, []string{userId}, m.estimates(userId, call.Geo), "solo-"+userId, forced)
 	return `{"status":"starting"}`, nil
 }
 
-// region is the gameye_region RPC: {"region":<id>}, the enabled region nearest
-// the payload's geo token, or the fallback. Never an error: a page with a
-// missing, bad or expired token still gets a region to queue in.
+// region is the gameye_region RPC: {"region":<id>,"regions":[<enabled>]},
+// the payload's region when it is enabled, else the enabled region nearest
+// its geo token, else the fallback. Never an error: a page with a missing,
+// bad or expired token, or a region no longer enabled, still gets a region
+// to queue in.
 func (m *gameyeMatches) region(_ context.Context, _ runtime.Logger, _ *sql.DB, _ runtime.NakamaModule, payload string) (string, error) {
 	var call struct {
-		Geo string `json:"geo"`
+		Geo    string `json:"geo"`
+		Region string `json:"region"`
 	}
 	region := m.fallback
 	if json.Unmarshal([]byte(payload), &call) == nil {
-		if at, err := verifyGeoToken(m.relaySecret, call.Geo, m.now()); err == nil {
+		if forced, ok := pickedRegion([]string{call.Region}, call.Region != "", m.regions); ok {
+			region = forced
+		} else if at, err := verifyGeoToken(m.relaySecret, call.Geo, m.now()); err == nil {
 			region = nearest(m.regions, at)
 		}
 	}
-	reply, err := json.Marshal(map[string]string{"region": region})
+	reply, err := json.Marshal(struct {
+		Region  string   `json:"region"`
+		Regions []string `json:"regions"`
+	}{region, m.regions})
 	if err != nil {
 		return "", runtime.NewError("error encoding the region", 13) // INTERNAL
 	}
@@ -243,21 +268,28 @@ func (m *gameyeMatches) holds(userId string) bool {
 }
 
 // start asks the fleet manager for a session, then retries or announces from
-// its callback. The players must already be marked starting.
-func (m *gameyeMatches) start(ctx context.Context, userIds []string, latencies []runtime.FleetUserLatencies, externalId string) {
-	m.attempt(ctx, request{
+// its callback. The players must already be marked starting. A forced
+// region (pickedRegion's) is where it starts; "" leaves it to the latencies.
+func (m *gameyeMatches) start(ctx context.Context, userIds []string, latencies []runtime.FleetUserLatencies, externalId, forced string) {
+	r := request{
 		userIds:    userIds,
 		latencies:  latencies,
-		region:     expected(userIds, latencies, m.fallback),
+		region:     forced,
+		forced:     forced != "",
 		externalId: externalId,
-	}, 0)
+	}
+	if !r.forced {
+		r.region = expected(userIds, latencies, m.fallback)
+	}
+	m.attempt(ctx, r, 0)
 }
 
 // request is one match's session start, the same on each retry.
 type request struct {
 	userIds    []string
 	latencies  []runtime.FleetUserLatencies
-	region     string // where the fleet manager starts it, by its own rule
+	region     string // where the fleet manager starts it: forced, or by its own rule
+	forced     bool   // a player picked region, passed as MetadataKeyRegion
 	externalId string
 }
 
@@ -274,6 +306,9 @@ func (m *gameyeMatches) attempt(ctx context.Context, r request, retries int) {
 	metadata := map[string]any{
 		fleetmanager.MetadataKeyExternalId: r.externalId,
 		fleetmanager.MetadataKeyEnv:        map[string]string{envSeatSecret: secret},
+	}
+	if r.forced {
+		metadata[fleetmanager.MetadataKeyRegion] = r.region
 	}
 
 	// The callback runs after the hook or RPC has returned, when Nakama has
@@ -298,7 +333,7 @@ func (m *gameyeMatches) attempt(ctx context.Context, r request, retries int) {
 		m.fail(userIds, reasonError, err)
 		return
 	}
-	m.logger.Info("starting gameye session %v for players %v in %v", result[fleetmanager.CreateSessionIdKey], userIds, r.region)
+	m.logger.Info("starting gameye session %v for players %v in %v (picked: %v)", result[fleetmanager.CreateSessionIdKey], userIds, r.region, r.forced)
 }
 
 // announce signs each player's tokens and sends them where to connect. A

@@ -144,20 +144,29 @@ func TestRegionRpc(t *testing.T) {
 	expired, _ := sign(testRelaySecret, map[string]any{"t": "geo", "lat": 1.35, "lon": 103.82, "exp": testIssued.Unix() - 1})
 	forged, _ := sign([]byte("another-secret-another-secret-another"), map[string]any{"t": "geo", "lat": 1.35, "lon": 103.82, "exp": testIssued.Unix() + 600})
 
+	const enabled = `,"regions":["eu-central-1","us-east-1","ap-southeast-1"]}`
 	for name, tc := range map[string]struct{ payload, want string }{
-		"Singapore":        {`{"geo":"` + geoAt(singapore) + `"}`, `{"region":"ap-southeast-1"}`},
-		"Washington DC":    {`{"geo":"` + geoAt(washington) + `"}`, `{"region":"us-east-1"}`},
-		"expired":          {`{"geo":"` + expired + `"}`, `{"region":"eu-central-1"}`},
-		"another secret":   {`{"geo":"` + forged + `"}`, `{"region":"eu-central-1"}`},
-		"not a token":      {`{"geo":"v1.x.y"}`, `{"region":"eu-central-1"}`},
-		"geo not a string": {`{"geo":7}`, `{"region":"eu-central-1"}`},
-		"empty object":     {`{}`, `{"region":"eu-central-1"}`},
-		"empty":            {``, `{"region":"eu-central-1"}`},
-		"not json":         {`not json`, `{"region":"eu-central-1"}`},
+		"Singapore":        {`{"geo":"` + geoAt(singapore) + `"}`, `{"region":"ap-southeast-1"`},
+		"Washington DC":    {`{"geo":"` + geoAt(washington) + `"}`, `{"region":"us-east-1"`},
+		"expired":          {`{"geo":"` + expired + `"}`, `{"region":"eu-central-1"`},
+		"another secret":   {`{"geo":"` + forged + `"}`, `{"region":"eu-central-1"`},
+		"not a token":      {`{"geo":"v1.x.y"}`, `{"region":"eu-central-1"`},
+		"geo not a string": {`{"geo":7}`, `{"region":"eu-central-1"`},
+		"empty object":     {`{}`, `{"region":"eu-central-1"`},
+		"empty":            {``, `{"region":"eu-central-1"`},
+		"not json":         {`not json`, `{"region":"eu-central-1"`},
+
+		"picked, from Singapore":      {`{"geo":"` + geoAt(singapore) + `","region":"us-east-1"}`, `{"region":"us-east-1"`},
+		"picked, without a token":     {`{"region":"ap-southeast-1"}`, `{"region":"ap-southeast-1"`},
+		"picked, an expired token":    {`{"geo":"` + expired + `","region":"us-east-1"}`, `{"region":"us-east-1"`},
+		"picked, not enabled":         {`{"geo":"` + geoAt(singapore) + `","region":"sa-east-1"}`, `{"region":"ap-southeast-1"`},
+		"picked, unknown, no token":   {`{"region":"nowhere"}`, `{"region":"eu-central-1"`},
+		"picked, empty":               {`{"geo":"` + geoAt(washington) + `","region":""}`, `{"region":"us-east-1"`},
+		"picked, region not a string": {`{"region":7}`, `{"region":"eu-central-1"`},
 	} {
 		reply, err := m.region(soloCtx("user-a"), logger, nil, nk, tc.payload)
-		if err != nil || reply != tc.want {
-			t.Errorf("%v: (%s, %v), want %s", name, reply, err, tc.want)
+		if want := tc.want + enabled; err != nil || reply != want {
+			t.Errorf("%v: (%s, %v), want %s", name, reply, err, want)
 		}
 	}
 	if logs := logger.all(); strings.Contains(logs, "103.82") || strings.Contains(logs, "v1.") {
@@ -165,6 +174,169 @@ func TestRegionRpc(t *testing.T) {
 	}
 	if calls := fleet.createCalls(); len(calls) != 0 {
 		t.Errorf("%d Create calls, want 0", len(calls))
+	}
+}
+
+// The enabled list keeps GAMEYE_API_REGIONS' order, whatever it is.
+func TestRegionRpcListsTheEnabledRegionsInOrder(t *testing.T) {
+	fleet, nk := &fakeFleet{}, newFakeNk()
+	logger := &fakeLogger{}
+	m := newGameyeMatches(fleet, nk, logger, testRelaySecret, testRelayUrl, []string{"us-east-1", "eu-central-1"}, "us-east-1")
+	m.now = func() time.Time { return testIssued }
+	reply, err := m.region(soloCtx("user-a"), logger, nil, nk, `{"region":"ap-southeast-1"}`)
+	if want := `{"region":"us-east-1","regions":["us-east-1","eu-central-1"]}`; err != nil || reply != want {
+		t.Errorf("(%s, %v), want %s: a region not enabled here is not picked", reply, err, want)
+	}
+}
+
+// --- a picked region -----------------------------------------------------------
+
+func TestPickedRegion(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		regions []string
+		chosen  bool
+		want    string
+		forced  bool
+	}{
+		{"one picked", []string{"us-east-1"}, true, "us-east-1", true},
+		{"all agree", []string{"eu-central-1", "eu-central-1", "eu-central-1"}, true, "eu-central-1", true},
+		{"nobody picked", []string{"eu-central-1", "eu-central-1"}, false, "", false},
+		{"not enabled", []string{"sa-east-1", "sa-east-1"}, true, "", false},
+		{"empty", []string{""}, true, "", false},
+		{"no tickets", nil, true, "", false},
+		{"tickets disagree", []string{"eu-central-1", "us-east-1"}, true, "", false},
+		{"one ticket without a region", []string{"eu-central-1", ""}, true, "", false},
+	} {
+		if got, forced := pickedRegion(tc.regions, tc.chosen, testRegions); got != tc.want || forced != tc.forced {
+			t.Errorf("%v: (%q, %v), want (%q, %v)", tc.name, got, forced, tc.want, tc.forced)
+		}
+	}
+}
+
+// queued is a Gameye ticket as the page queues it: in region, picked or not.
+func queued(userId, geo, region string, pick bool) runtime.MatchmakerEntry {
+	properties := map[string]any{"mode": "gameye", "build": "b1", "region": region, "geo": geo}
+	if pick {
+		properties["pick"] = "1"
+	}
+	return fakeEntry{userId: userId, ticket: "ticket-" + userId, properties: properties}
+}
+
+// One player in Fort Worth picked Frankfurt; two in Frankfurt queued there as
+// their nearest. By the estimates alone Virginia wins (worst case ~110 ms,
+// against ~129 ms in Frankfurt), so only the override starts it where they
+// all queued.
+func TestMatchedStartsInThePickedRegion(t *testing.T) {
+	fleet, nk := &fakeFleet{}, newFakeNk()
+	m, logger := newTestMatches(fleet, nk)
+	entries := []runtime.MatchmakerEntry{
+		queued("user-a", geoAt(fortWorth), "eu-central-1", true),
+		queued("user-b", geoAt(frankfurt), "eu-central-1", false),
+		queued("user-c", geoAt(frankfurt), "eu-central-1", false),
+	}
+	if by := expected([]string{"user-a", "user-b", "user-c"}, fleetLatencies(m, entries), "eu-central-1"); by != "us-east-1" {
+		t.Fatalf("the estimates alone pick %v, want us-east-1 for this case to mean anything", by)
+	}
+
+	_, _ = m.matched(context.Background(), logger, nil, nk, entries)
+	for range 3 {
+		if n := nk.next(t); n.Content["region"] != "eu-central-1" {
+			t.Errorf("%v's region = %v, want the picked eu-central-1", n.UserID, n.Content["region"])
+		}
+	}
+	calls := fleet.createCalls()
+	if len(calls) != 1 || calls[0].metadata["gameye.region"] != "eu-central-1" {
+		t.Fatalf("Create calls = %+v, want one with gameye.region eu-central-1", calls)
+	}
+	if len(calls[0].latencies) != 9 {
+		t.Errorf("%d latencies, want the nine estimates still passed", len(calls[0].latencies))
+	}
+}
+
+func fleetLatencies(m *gameyeMatches, entries []runtime.MatchmakerEntry) []runtime.FleetUserLatencies {
+	var latencies []runtime.FleetUserLatencies
+	for _, e := range entries {
+		geo, _ := e.GetProperties()["geo"].(string)
+		latencies = append(latencies, m.estimates(e.GetPresence().GetUserId(), geo)...)
+	}
+	return latencies
+}
+
+func TestMatchedLeavesAnUnusablePickToTheEstimates(t *testing.T) {
+	for name, entries := range map[string][]runtime.MatchmakerEntry{
+		"nobody picked": {
+			queued("user-a", geoAt(fortWorth), "eu-central-1", false),
+			queued("user-b", geoAt(frankfurt), "eu-central-1", false),
+			queued("user-c", geoAt(frankfurt), "eu-central-1", false),
+		},
+		"a region not enabled": {
+			queued("user-a", geoAt(fortWorth), "sa-east-1", true),
+			queued("user-b", geoAt(frankfurt), "sa-east-1", false),
+			queued("user-c", geoAt(frankfurt), "sa-east-1", false),
+		},
+		"tickets that disagree": {
+			queued("user-a", geoAt(fortWorth), "eu-central-1", true),
+			queued("user-b", geoAt(frankfurt), "us-east-1", false),
+			queued("user-c", geoAt(frankfurt), "eu-central-1", false),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fleet, nk := &fakeFleet{}, newFakeNk()
+			m, logger := newTestMatches(fleet, nk)
+
+			_, _ = m.matched(context.Background(), logger, nil, nk, entries)
+			for range 3 {
+				if n := nk.next(t); n.Content["region"] != "us-east-1" {
+					t.Errorf("%v's region = %v, want us-east-1, by the estimates", n.UserID, n.Content["region"])
+				}
+			}
+			calls := fleet.createCalls()
+			if _, ok := calls[0].metadata["gameye.region"]; ok || len(calls[0].latencies) != 9 {
+				t.Errorf("Create = %+v, want the nine estimates and no gameye.region", calls[0])
+			}
+		})
+	}
+}
+
+func TestRetriesKeepThePickedRegion(t *testing.T) {
+	fleet, nk := &fakeFleet{outcomes: []outcome{{runtime.CreateError, apiError(420)}}}, newFakeNk()
+	m, logger := newTestMatches(fleet, nk)
+
+	_, _ = m.matched(context.Background(), logger, nil, nk, []runtime.MatchmakerEntry{queued("user-a", geoAt(washington), "ap-southeast-1", true), queued("user-b", geoAt(washington), "ap-southeast-1", true)})
+	nk.next(t)
+	nk.next(t)
+	calls := fleet.createCalls()
+	if len(calls) != 2 || calls[0].metadata["gameye.region"] != "ap-southeast-1" || calls[1].metadata["gameye.region"] != "ap-southeast-1" {
+		t.Errorf("Create calls = %+v, want the retry in the picked region too", calls)
+	}
+}
+
+func TestSoloMatchStartsInThePickedRegion(t *testing.T) {
+	for name, tc := range map[string]struct {
+		payload, want string
+		forced        bool
+	}{
+		"picked":                  {`{"geo":"` + geoAt(sydney) + `","region":"us-east-1"}`, "us-east-1", true},
+		"picked, resumed":         {`{"resume":true,"geo":"` + geoAt(sydney) + `","region":"us-east-1"}`, "us-east-1", true},
+		"picked, without a token": {`{"region":"ap-southeast-1"}`, "ap-southeast-1", true},
+		"not enabled":             {`{"geo":"` + geoAt(sydney) + `","region":"sa-east-1"}`, "ap-southeast-1", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fleet, nk := &fakeFleet{}, newFakeNk()
+			m, logger := newTestMatches(fleet, nk)
+
+			if reply, err := m.soloMatch(soloCtx("user-a"), logger, nil, nk, tc.payload); err != nil || reply != `{"status":"starting"}` {
+				t.Fatalf("solo = (%s, %v), want starting", reply, err)
+			}
+			if n := nk.next(t); n.Content["region"] != tc.want {
+				t.Errorf("region = %v, want %v", n.Content["region"], tc.want)
+			}
+			region, ok := fleet.createCalls()[0].metadata["gameye.region"]
+			if ok != tc.forced || (ok && region != tc.want) {
+				t.Errorf("gameye.region = %v (set: %v), want %v (set: %v)", region, ok, tc.want, tc.forced)
+			}
+		})
 	}
 }
 
@@ -247,8 +419,12 @@ func TestMatchedWithoutAnyTokenPassesNoLatencies(t *testing.T) {
 		t.Errorf("region = %v, want eu-central-1", n.Content["region"])
 	}
 	nk.next(t)
-	if l := fleet.createCalls()[0].latencies; len(l) != 0 {
-		t.Errorf("latencies = %+v, want none", l)
+	call := fleet.createCalls()[0]
+	if len(call.latencies) != 0 {
+		t.Errorf("latencies = %+v, want none", call.latencies)
+	}
+	if _, ok := call.metadata["gameye.region"]; ok {
+		t.Error("gameye.region is set, but nobody picked a region")
 	}
 }
 

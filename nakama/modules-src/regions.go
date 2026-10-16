@@ -2,6 +2,7 @@ package main
 
 import (
 	"math"
+	"slices"
 
 	"github.com/heroiclabs/nakama-common/runtime"
 )
@@ -118,4 +119,21 @@ func expected(userIds []string, latencies []runtime.FleetUserLatencies, fallback
 		return fallback
 	}
 	return best
+}
+
+// pickedRegion is the region a match must start in because a player chose
+// it, overriding expected. regions are its tickets' region properties (the
+// one asked for, for a solo call); chosen says a player picked. It is forced
+// only when they all name one enabled region: anything else is left to the
+// estimates, as if nobody had picked.
+func pickedRegion(regions []string, chosen bool, enabled []string) (string, bool) {
+	if !chosen || len(regions) == 0 || !slices.Contains(enabled, regions[0]) {
+		return "", false
+	}
+	for _, region := range regions[1:] {
+		if region != regions[0] {
+			return "", false
+		}
+	}
+	return regions[0], true
 }
