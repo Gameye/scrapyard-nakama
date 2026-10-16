@@ -7,7 +7,7 @@
 # sha-<commit> next to the game server image of the same commit.
 #
 # Build from the repo root (the plugin's Go modules, github.com/Gameye/
-# nakama-fleetmanager v0.1.0 among them, are downloaded in the plugin stage):
+# nakama-fleetmanager v0.2.0 among them, are downloaded in the plugin stage):
 #   docker build -f nakama/Dockerfile -t scrapyard-nakama-backend .
 # (podman build takes the same flags.)
 #
