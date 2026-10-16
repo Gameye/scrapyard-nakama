@@ -1,0 +1,25 @@
+# Scrapyard on Gameye (Gameye/scrapyard-nakama). Owner: the-boss session.
+# Imported by /etc/caddy/Caddyfile (rooms-matchmaker PR #28). No access log.
+# The play page (static Gameye-mode build) and Nakama's API + socket.
+scrapyard.gameye.com {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options "DENY"
+	}
+	@forever path /assets/*
+	header @forever Cache-Control "public, max-age=31536000, immutable"
+	header ?Cache-Control "no-cache"
+	root * /srv/scrapyard/site
+	try_files {path} /index.html
+	file_server
+}
+
+scrapyard-api.gameye.com {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+	}
+	reverse_proxy 127.0.0.1:7350
+}

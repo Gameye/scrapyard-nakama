@@ -1,0 +1,15 @@
+# Nakama's own database. Separate from the matchmaker's Postgres 17 cluster (not in its pgBackRest stanza).
+[Unit]
+Description=Scrapyard Postgres (Nakama)
+[Container]
+ContainerName=scrapyard-postgres
+Image=docker.io/library/postgres:16-alpine
+EnvironmentFile=/etc/scrapyard/postgres.env
+Volume=scrapyard-postgres:/var/lib/postgresql/data
+Network=scrapyard.network:ip=10.89.0.10
+HealthCmd=pg_isready -U postgres -d nakama
+HealthInterval=5s
+[Service]
+Restart=always
+[Install]
+WantedBy=multi-user.target

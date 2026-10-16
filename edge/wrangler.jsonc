@@ -6,17 +6,16 @@
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "scrapyard-relay",
-  "account_id": "48da264b5fa2dc22dc36051e36296f33",
+  "account_id": "6fe01292662c1234adaf972a1a621d14", // Gameye account: the gameye.com zone lives here
   "main": "worker.js",
   "compatibility_date": "2026-09-26",
-  // Custom domain, once Andrew confirms the hostname:
-  // "routes": [{ "pattern": "scrapyard-relay.gameye.com", "custom_domain": true }],
+  "routes": [{ "pattern": "scrapyard-relay.gameye.com", "custom_domain": true }],
   "vars": {
     "ALLOWED_ORIGINS": "https://scrapyard.gameye.com",
     "GAMEYE_IPV4_DNS_SUFFIX": "sslip.io"
     // "UPSTREAM_ORIGIN": unset, so the game server sees the page's own Origin.
   },
-  "limits": { "cpu_ms": 50 },
+  // No "limits": the Gameye account is on Workers Free, which refuses cpu_ms (the relay only checks a token and passes the socket on).
   // Request URLs carry relay tokens: no logs, no traces.
   "observability": {
     "enabled": false,

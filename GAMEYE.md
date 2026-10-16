@@ -301,7 +301,7 @@ Nakama's console is at `http://127.0.0.1:7351` (admin / password: `compose.gamey
 
 ## Deploying
 
-Deploying the stack to a server (Nakama, Postgres and the play site behind Caddy, and the relay on Cloudflare) is covered in `deploy/README.md`, which will be added.
+The public demo at https://scrapyard.gameye.com runs Nakama, its Postgres and the play page on a shared Ubuntu host with Podman, behind that host's Caddy, and the relay on Cloudflare: [`deploy/gameye-ovh/README.md`](deploy/gameye-ovh/README.md).
 
 The relay deploys on its own with Wrangler; the commands are at the top of [`edge/wrangler.jsonc`](edge/wrangler.jsonc). Its `RELAY_SECRET` must equal the plugin's, and its `ALLOWED_ORIGINS` must name your play site. The game server image also has the allowed origins built in (the `ALLOWED_ORIGINS` build argument in the [`Dockerfile`](Dockerfile)), so build it with your play site's origin.
 

@@ -1,0 +1,18 @@
+# Nakama with the Gameye plugin, built from /opt/scrapyard/src (nakama/Dockerfile).
+# Reached only through Caddy (scrapyard-api.gameye.com -> 127.0.0.1:7350); console on 127.0.0.1:7351 over SSH.
+[Unit]
+Description=Scrapyard Nakama
+Requires=scrapyard-postgres.service
+After=scrapyard-postgres.service
+[Container]
+ContainerName=scrapyard-nakama
+Image=localhost/scrapyard-nakama-backend:sha-55a81de
+EnvironmentFile=/etc/scrapyard/nakama.env
+Network=scrapyard.network
+PublishPort=127.0.0.1:7350:7350
+PublishPort=127.0.0.1:7351:7351
+[Service]
+Restart=always
+RestartSec=10
+[Install]
+WantedBy=multi-user.target
