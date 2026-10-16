@@ -338,6 +338,7 @@ func TestReadConfigRegions(t *testing.T) {
 		{"eu-central-1", "", "eu-central-1"},
 		{"eu-central-1", "eu-central-1,us-east-1,ap-southeast-1", "eu-central-1 us-east-1 ap-southeast-1"},
 		{"us-east-1", " eu-central-1 , us-east-1 ", "eu-central-1 us-east-1"},
+		{"eu-west-1", "", "eu-west-1"}, // one region needs no location
 	} {
 		cfg, err := readConfig(env(tc.region, tc.regions))
 		if err != nil {
@@ -355,7 +356,6 @@ func TestReadConfigRegions(t *testing.T) {
 		{"an empty entry", "eu-central-1", "eu-central-1,,us-east-1", "GAMEYE_API_REGIONS"},
 		{"a trailing comma", "eu-central-1", "eu-central-1,", "GAMEYE_API_REGIONS"},
 		{"listed region with no location", "eu-central-1", "eu-central-1,sa-east-1", "GAMEYE_API_REGIONS"},
-		{"fallback with no location", "europe", "", "GAMEYE_API_REGION"},
 	} {
 		_, err := readConfig(env(tc.region, tc.regions))
 		if err == nil {
@@ -368,5 +368,15 @@ func TestReadConfigRegions(t *testing.T) {
 		if strings.Contains(err.Error(), "sa-east-1") || strings.Contains(err.Error(), "europe") {
 			t.Errorf("%v: %q quotes a value", tc.name, err)
 		}
+	}
+}
+
+func TestOneRegionWithoutASite(t *testing.T) {
+	at := point{50.1155, 8.6842}
+	if got := estimates("u1", at, []string{"eu-west-1"}); len(got) != 0 {
+		t.Fatalf("estimates for a region with no site: %v, want none", got)
+	}
+	if got := nearest([]string{"eu-west-1"}, at); got != "eu-west-1" {
+		t.Fatalf("nearest = %q, want the one region", got)
 	}
 }

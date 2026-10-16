@@ -35,15 +35,19 @@ func estimateMs(from, to point) float32 {
 }
 
 // estimates is one player's estimated round trip to each enabled region, as
-// the Fleet Manager takes them. Every enabled region is in regionSites
-// (readConfig).
+// the Fleet Manager takes them. A region with no site (a single configured
+// region readConfig lets through) gets none, so the session falls back to it.
 func estimates(userId string, at point, enabled []string) []runtime.FleetUserLatencies {
 	latencies := make([]runtime.FleetUserLatencies, 0, len(enabled))
 	for _, region := range enabled {
+		site, ok := regionSites[region]
+		if !ok {
+			continue
+		}
 		latencies = append(latencies, runtime.FleetUserLatencies{
 			UserId:                userId,
 			RegionIdentifier:      region,
-			LatencyInMilliseconds: estimateMs(at, regionSites[region]),
+			LatencyInMilliseconds: estimateMs(at, site),
 		})
 	}
 	return latencies

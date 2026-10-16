@@ -98,19 +98,14 @@ func readConfig(env map[string]string) (config, error) {
 }
 
 // readRegions reads GAMEYE_API_REGIONS, a comma list; unset, the enabled
-// regions are GAMEYE_API_REGION alone. Each must be in regionSites, and the
-// fallback among them. Its errors name keys, never values.
+// regions are GAMEYE_API_REGION alone, which needs no location: with one
+// region there is nothing to choose. A listed region must be in regionSites,
+// and the fallback among them. Its errors name keys, never values.
 func readRegions(list, fallback string) ([]string, error) {
-	unknown := func(key string) error {
-		return fmt.Errorf("runtime env %v names a region the plugin has no location for (regions.go)", key)
-	}
 	if fallback == "" {
 		return nil, nil // reported as missing already
 	}
 	if list == "" {
-		if _, ok := regionSites[fallback]; !ok {
-			return nil, unknown(envRegion)
-		}
 		return []string{fallback}, nil
 	}
 	var regions []string
@@ -123,7 +118,7 @@ func readRegions(list, fallback string) ([]string, error) {
 			return nil, fmt.Errorf("runtime env %v lists a region twice", envRegions)
 		}
 		if _, ok := regionSites[region]; !ok {
-			return nil, unknown(envRegions)
+			return nil, fmt.Errorf("runtime env %v names a region the plugin has no location for (regions.go)", envRegions)
 		}
 		regions = append(regions, region)
 	}
