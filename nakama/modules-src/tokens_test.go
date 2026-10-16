@@ -195,3 +195,74 @@ func TestTokensMatchThePinnedVectors(t *testing.T) {
 		t.Errorf("relay token = %v, want the pinned GO_RELAY %v", relay, goRelay)
 	}
 }
+
+// geoAt signs a geo token for a point as the relay does (edge/worker.js), good
+// for 600 s from testIssued.
+func geoAt(at point) string {
+	token, _ := sign(testRelaySecret, map[string]any{"t": "geo", "lat": at.lat, "lon": at.lon, "exp": testIssued.Add(600 * time.Second).Unix()})
+	return token
+}
+
+func TestGeoTokenVerifiesToItsPoint(t *testing.T) {
+	at, err := verifyGeoToken(testRelaySecret, geoAt(point{-33.87, 151.21}), testIssued.Add(600*time.Second))
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if at != (point{-33.87, 151.21}) {
+		t.Errorf("point = %+v, want Sydney's", at)
+	}
+}
+
+func TestGeoTokenRefusals(t *testing.T) {
+	exp := testIssued.Add(600 * time.Second).Unix()
+	claims := func(over map[string]any) string {
+		c := map[string]any{"t": "geo", "lat": 32.75, "lon": -97.33, "exp": exp}
+		for k, v := range over {
+			if v == nil {
+				delete(c, k)
+			} else {
+				c[k] = v
+			}
+		}
+		token, _ := sign(testRelaySecret, c)
+		return token
+	}
+	good := claims(nil)
+	other, _ := sign([]byte("another-secret-another-secret-another"), map[string]any{"t": "geo", "lat": 32.75, "lon": -97.33, "exp": exp})
+	moved := strings.Split(claims(map[string]any{"lat": 1.0}), ".")
+	long := claims(map[string]any{"pad": strings.Repeat("x", 1000)})
+	if len(long) <= maxTokenLength {
+		t.Fatal("the over-long case isn't over 1024 characters")
+	}
+	for name, tc := range map[string]struct {
+		token string
+		now   time.Time
+	}{
+		"another secret":        {other, testIssued},
+		"moved, same signature": {moved[0] + "." + moved[1] + "." + strings.Split(good, ".")[2], testIssued},
+		"expired":               {good, testIssued.Add(601 * time.Second)},
+		"over 1024 characters":  {long, testIssued},
+		"a relay token":         {claims(map[string]any{"t": "relay"}), testIssued},
+		"no t":                  {claims(map[string]any{"t": nil}), testIssued},
+		"lat over 90":           {claims(map[string]any{"lat": 90.5}), testIssued},
+		"lat under -90":         {claims(map[string]any{"lat": -91}), testIssued},
+		"lon over 180":          {claims(map[string]any{"lon": 180.01}), testIssued},
+		"lon under -180":        {claims(map[string]any{"lon": -181}), testIssued},
+		"no lat":                {claims(map[string]any{"lat": nil}), testIssued},
+		"no lon":                {claims(map[string]any{"lon": nil}), testIssued},
+		"lat as a string":       {claims(map[string]any{"lat": "32.75"}), testIssued},
+		"empty":                 {"", testIssued},
+	} {
+		if _, err := verifyGeoToken(testRelaySecret, tc.token, tc.now); err == nil {
+			t.Errorf("%v: verified", name)
+		}
+	}
+	if _, err := verifyGeoToken(testRelaySecret, good, time.Unix(exp, 0)); err != nil {
+		t.Errorf("refused at its exp second: %v", err)
+	}
+	for _, edge := range []map[string]any{{"lat": 90.0, "lon": 180.0}, {"lat": -90.0, "lon": -180.0}} {
+		if _, err := verifyGeoToken(testRelaySecret, claims(edge), testIssued); err != nil {
+			t.Errorf("%v refused: %v", edge, err)
+		}
+	}
+}

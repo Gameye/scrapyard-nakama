@@ -20,6 +20,9 @@ const (
 	// the hook leaves every other ticket to Nakama.
 	modeProperty = "mode"
 	modeGameye   = "gameye"
+	// geoProperty holds the player's geo token, on a ticket and in the solo
+	// RPC's payload.
+	geoProperty = "geo"
 
 	// soloRpc starts a match for one player, with bots in the empty seats:
 	// Nakama's matchmaker won't take a ticket for fewer than two.
@@ -28,6 +31,10 @@ const (
 	// (its socket dropped and came back): it may be handed the match it
 	// missed. A call with no payload is a fresh one.
 	soloResume = `{"resume":true}`
+
+	// regionRpc answers the region a player's search queues in: the nearest
+	// enabled one to their geo token, else the fallback.
+	regionRpc = "gameye_region"
 
 	matchSubject  = fleetmanager.NotificationSubject // "gameye_match", code 7300
 	failedSubject = "gameye_failed"
@@ -64,6 +71,8 @@ type gameyeMatches struct {
 	logger      runtime.Logger
 	relaySecret []byte
 	relayUrl    string
+	regions     []string // enabled, in regionSites
+	fallback    string   // the fleet manager's configured region, among regions
 
 	now func() time.Time
 	// backoff holds the wait before each retry of a start that found no
@@ -83,13 +92,15 @@ type assignment struct {
 	exp     time.Time
 }
 
-func newGameyeMatches(fm fleet, nk runtime.NakamaModule, logger runtime.Logger, relaySecret []byte, relayUrl string) *gameyeMatches {
+func newGameyeMatches(fm fleet, nk runtime.NakamaModule, logger runtime.Logger, relaySecret []byte, relayUrl string, regions []string, fallback string) *gameyeMatches {
 	return &gameyeMatches{
 		fm:          fm,
 		nk:          nk,
 		logger:      logger,
 		relaySecret: relaySecret,
 		relayUrl:    relayUrl,
+		regions:     regions,
+		fallback:    fallback,
 		now:         time.Now,
 		backoff:     []time.Duration{time.Second, 2 * time.Second},
 		starting:    make(map[string]bool),
@@ -106,15 +117,18 @@ func (m *gameyeMatches) matched(ctx context.Context, _ runtime.Logger, _ *sql.DB
 		return "", nil
 	}
 	userIds := make([]string, 0, len(entries))
-	seen := make(map[string]bool, len(entries))
+	geo := make(map[string]string, len(entries)) // each player's first geo token
 	for _, entry := range entries {
-		if mode, _ := entry.GetProperties()[modeProperty].(string); mode != modeGameye {
+		properties := entry.GetProperties()
+		if mode, _ := properties[modeProperty].(string); mode != modeGameye {
 			return "", nil
 		}
 		userId := entry.GetPresence().GetUserId()
-		if !seen[userId] {
-			seen[userId] = true
+		if _, seen := geo[userId]; !seen {
 			userIds = append(userIds, userId)
+		}
+		if geo[userId] == "" {
+			geo[userId], _ = properties[geoProperty].(string)
 		}
 	}
 
@@ -136,12 +150,17 @@ func (m *gameyeMatches) matched(ctx context.Context, _ runtime.Logger, _ *sql.DB
 		return "", nil
 	}
 
+	var latencies []runtime.FleetUserLatencies
+	for _, userId := range players {
+		latencies = append(latencies, m.estimates(userId, geo[userId])...)
+	}
 	// The first ticket traces the Gameye session back to the matchmaker.
-	m.start(ctx, players, entries[0].GetTicket())
+	m.start(ctx, players, latencies, entries[0].GetTicket())
 	return "", nil
 }
 
-// soloMatch is the gameye_solo_match RPC. A caller whose match is on its way
+// soloMatch is the gameye_solo_match RPC; its payload may carry the caller's
+// geo token beside resume, or alone. A caller whose match is on its way
 // gets {"status":"starting"} and nothing more starts. A resume (payload
 // soloResume: the page's socket came back mid-search) whose tokens are still
 // good gets {"status":"matched","match":<the gameye_match content>}, once. Any
@@ -154,11 +173,12 @@ func (m *gameyeMatches) soloMatch(ctx context.Context, _ runtime.Logger, _ *sql.
 		return "", runtime.NewError("a player's session is required", 16) // UNAUTHENTICATED
 	}
 	var call struct {
-		Resume bool `json:"resume"`
+		Resume bool   `json:"resume"`
+		Geo    string `json:"geo"`
 	}
 	if payload != "" {
 		if err := json.Unmarshal([]byte(payload), &call); err != nil {
-			return "", runtime.NewError(`the payload is none or {"resume":true}`, 3) // INVALID_ARGUMENT
+			return "", runtime.NewError(`the payload is none or {"resume":true,"geo":<token>}, either field optional`, 3) // INVALID_ARGUMENT
 		}
 	}
 
@@ -181,8 +201,38 @@ func (m *gameyeMatches) soloMatch(ctx context.Context, _ runtime.Logger, _ *sql.
 	m.starting[userId] = true
 	m.mu.Unlock()
 
-	m.start(ctx, []string{userId}, "solo-"+userId)
+	m.start(ctx, []string{userId}, m.estimates(userId, call.Geo), "solo-"+userId)
 	return `{"status":"starting"}`, nil
+}
+
+// region is the gameye_region RPC: {"region":<id>}, the enabled region nearest
+// the payload's geo token, or the fallback. Never an error: a page with a
+// missing, bad or expired token still gets a region to queue in.
+func (m *gameyeMatches) region(_ context.Context, _ runtime.Logger, _ *sql.DB, _ runtime.NakamaModule, payload string) (string, error) {
+	var call struct {
+		Geo string `json:"geo"`
+	}
+	region := m.fallback
+	if json.Unmarshal([]byte(payload), &call) == nil {
+		if at, err := verifyGeoToken(m.relaySecret, call.Geo, m.now()); err == nil {
+			region = nearest(m.regions, at)
+		}
+	}
+	reply, err := json.Marshal(map[string]string{"region": region})
+	if err != nil {
+		return "", runtime.NewError("error encoding the region", 13) // INTERNAL
+	}
+	return string(reply), nil
+}
+
+// estimates are the player's estimated round trips to each enabled region,
+// from their geo token; none for a missing, bad or expired one.
+func (m *gameyeMatches) estimates(userId, geoToken string) []runtime.FleetUserLatencies {
+	at, err := verifyGeoToken(m.relaySecret, geoToken, m.now())
+	if err != nil {
+		return nil
+	}
+	return estimates(userId, at, m.regions)
 }
 
 // holds: the player has an assignment whose tokens are still good. Call with
@@ -194,11 +244,25 @@ func (m *gameyeMatches) holds(userId string) bool {
 
 // start asks the fleet manager for a session, then retries or announces from
 // its callback. The players must already be marked starting.
-func (m *gameyeMatches) start(ctx context.Context, userIds []string, externalId string) {
-	m.attempt(ctx, userIds, externalId, 0)
+func (m *gameyeMatches) start(ctx context.Context, userIds []string, latencies []runtime.FleetUserLatencies, externalId string) {
+	m.attempt(ctx, request{
+		userIds:    userIds,
+		latencies:  latencies,
+		region:     expected(userIds, latencies, m.fallback),
+		externalId: externalId,
+	}, 0)
 }
 
-func (m *gameyeMatches) attempt(ctx context.Context, userIds []string, externalId string, retries int) {
+// request is one match's session start, the same on each retry.
+type request struct {
+	userIds    []string
+	latencies  []runtime.FleetUserLatencies
+	region     string // where the fleet manager starts it, by its own rule
+	externalId string
+}
+
+func (m *gameyeMatches) attempt(ctx context.Context, r request, retries int) {
+	userIds := r.userIds
 	// A new secret each attempt: a session that failed to start never shares
 	// one with the session that did.
 	secret, err := newSeatSecret()
@@ -208,7 +272,7 @@ func (m *gameyeMatches) attempt(ctx context.Context, userIds []string, externalI
 	}
 
 	metadata := map[string]any{
-		fleetmanager.MetadataKeyExternalId: externalId,
+		fleetmanager.MetadataKeyExternalId: r.externalId,
 		fleetmanager.MetadataKeyEnv:        map[string]string{envSeatSecret: secret},
 	}
 
@@ -216,30 +280,30 @@ func (m *gameyeMatches) attempt(ctx context.Context, userIds []string, externalI
 	// cancelled ctx: nothing in it uses ctx.
 	callback := func(status runtime.FmCreateStatus, instance *runtime.InstanceInfo, _ []*runtime.SessionInfo, _ map[string]any, err error) {
 		if status == runtime.CreateSuccess {
-			m.announce(userIds, instance, []byte(secret))
+			m.announce(userIds, instance, []byte(secret), r.region)
 			return
 		}
 		if status == runtime.CreateError && retryable(err) && retries < len(m.backoff) {
 			m.logger.Warn("no gameye session for players %v yet, retrying: %v", userIds, err)
 			time.AfterFunc(m.backoff[retries], func() {
-				m.attempt(context.Background(), userIds, externalId, retries+1)
+				m.attempt(context.Background(), r, retries+1)
 			})
 			return
 		}
 		m.fail(userIds, failureReason(status, err), err)
 	}
 
-	result, err := m.fm.Create(ctx, len(userIds), userIds, nil, metadata, callback)
+	result, err := m.fm.Create(ctx, len(userIds), userIds, r.latencies, metadata, callback)
 	if err != nil {
 		m.fail(userIds, reasonError, err)
 		return
 	}
-	m.logger.Info("starting gameye session %v for players %v", result[fleetmanager.CreateSessionIdKey], userIds)
+	m.logger.Info("starting gameye session %v for players %v in %v", result[fleetmanager.CreateSessionIdKey], userIds, r.region)
 }
 
 // announce signs each player's tokens and sends them where to connect. A
 // session its players never hear of is stopped.
-func (m *gameyeMatches) announce(userIds []string, instance *runtime.InstanceInfo, seatSecret []byte) {
+func (m *gameyeMatches) announce(userIds []string, instance *runtime.InstanceInfo, seatSecret []byte, region string) {
 	if instance == nil {
 		m.fail(userIds, reasonError, errors.New("the fleet manager reported no session"))
 		return
@@ -264,6 +328,7 @@ func (m *gameyeMatches) announce(userIds []string, instance *runtime.InstanceInf
 			return
 		}
 		contents[userId] = map[string]any{
+			"region":      region,
 			"relay_url":   m.relayUrl,
 			"relay_token": relayToken,
 			"seat_token":  seatToken,
