@@ -6,8 +6,11 @@ import { BUILD } from './protocol.ts'
 
 // Gameye mode's matchmaking as the page sees it (gameye-match.ts wires it to
 // the page's Nakama socket; the formats are the root AGENTS.md's Contracts):
-//   idle → searching   Play: a ticket on Nakama's matchmaker, mode=gameye and
-//                      this build, for 2 to 8 players. 12 s alone: the ticket
+//   idle → searching   Play: the relay's geo token (GET /geo, 2 s at most;
+//                      without one the search goes on), the region the plugin
+//                      answers for it (gameye_region), then a ticket on
+//                      Nakama's matchmaker, mode=gameye, this build and that
+//                      region, for 2 to 8 players. 12 s alone: the ticket
 //                      goes and the solo RPC starts a match for this player
 //                      (bots fill the rest), or answers with the one they have.
 //   searching → connecting  a gameye_match notification (or the RPC's match):
@@ -39,11 +42,13 @@ const NOTE = 5000 // ms a note is said for
 const FAILED_NOTE = 12_000 // ms a failure is said for: long enough to read and press Play again
 const MARK = 'scrapyard.gameye' // sessionStorage, per tab: a search is on ({ mode, map })
 const HELLO_TOKEN = 'gameye' // the hello's Nakama session field: the container seats by seat token only, and never sees the session
+export const GEO_WAIT = 2000 // ms for the relay's /geo before searching without it
 
 export const MATCH_CODE = 7300
 export const FAILED_CODE = 7301
 export const SOLO_RPC = 'gameye_solo_match'
 export const SOLO_RESUME = '{"resume":true}' // the solo call of a search whose socket came back: the plugin may hand back the match it missed
+export const REGION_RPC = 'gameye_region'
 export const PLAYERS = { min: 2, max: 8 }
 
 export const MESSAGES = {
@@ -54,11 +59,16 @@ export const MESSAGES = {
 }
 const UNAVAILABLE = new Set(['quota_exceeded', 'misconfigured'])
 
+// Where each Gameye region's servers are, as the status line names them.
+const REGION_NAMES: Record<string, string> = { 'eu-central-1': 'Frankfurt', 'us-east-1': 'Virginia', 'ap-southeast-1': 'Singapore' }
+export const regionName = (region: string) => (Object.hasOwn(REGION_NAMES, region) ? REGION_NAMES[region] : region)
+
 // A gameye_match notification's content (the RPC's match too).
 export interface GameyeMatch {
   host: string
   port: number
   session_id: string
+  region?: string // the Gameye region the plugin expects the session in
   relay_url: string
   relay_token: string
   seat_token: string
@@ -84,16 +94,41 @@ export interface QueueDeps {
   onSocket(listener: (socket: QueueSocket | null) => void): () => void // the live Nakama socket, now and on each change (session.ts)
   online(): void // brings that socket up if nothing has yet
   signIn(): Promise<{ guest: boolean }>
+  geo(): Promise<string | null> // the relay's geo token for this player, or null (fetchGeo)
   notifications(): Promise<Notification[]> // the player's persistent notifications
   forget(ids: string[]): Promise<unknown>
   storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null
 }
 
 // The ticket: Gameye mode, and only pages of this build (one build's page and
-// container speak one protocol). A build id with query characters is quoted.
+// container speak one protocol) and this region (nobody is matched across an
+// ocean). A build id or region with query characters is quoted.
 const term = (value: string) => (/^[A-Za-z0-9_-]+$/.test(value) ? value : `"${value.replace(/["\\]/g, '\\$&')}"`)
-export const ticketQuery = (build: string) => `+properties.mode:gameye +properties.build:${term(build)}`
-export const ticketProperties = (build: string) => ({ mode: 'gameye', build })
+export const ticketQuery = (build: string, region: string) => `+properties.mode:gameye +properties.build:${term(build)} +properties.region:${term(region)}`
+export const ticketProperties = (build: string, region: string, geo: string | null): Record<string, string> => ({ mode: 'gameye', build, region, ...(geo ? { geo } : {}) })
+
+// The solo call's payload: fresh (none) or a resume, with the geo token when there is one.
+export const soloPayload = (resume: boolean, geo: string | null) => (geo ? JSON.stringify(resume ? { resume: true, geo } : { geo }) : resume ? SOLO_RESUME : undefined)
+
+// GET <relay>/geo: the relay's geo token for where Cloudflare places this
+// player, or null when the build has no relay, it fails, or GEO_WAIT passes.
+export function fetchGeo(relay: string | undefined, clock: Clock, fetcher: typeof fetch = fetch): Promise<string | null> {
+  if (!relay) return Promise.resolve(null)
+  return new Promise((resolve) => {
+    const abort = new AbortController()
+    const cancel = clock.after(GEO_WAIT, () => {
+      abort.abort()
+      resolve(null)
+    })
+    fetcher(`${relay.replace(/\/+$/, '')}/geo`, { signal: abort.signal, cache: 'no-store' })
+      .then((response) => (response.ok ? response.json() : null))
+      .then(
+        (body: { geo?: unknown } | null) => resolve(typeof body?.geo === 'string' && body.geo ? body.geo : null),
+        () => resolve(null),
+      )
+      .finally(cancel)
+  })
+}
 
 export function readMatch(content: unknown): GameyeMatch | null {
   if (typeof content !== 'object' || content === null) return null
@@ -119,6 +154,8 @@ export function createGameyeQueue(deps: QueueDeps) {
   let detach: (() => void) | null = null
   let ticket: string | null = null
   let solo = false // the solo RPC was called for this search
+  let geo: Promise<string | null> = Promise.resolve(null) // this search's geo token, fetched once
+  let region = '' // the region this search queues in, once the plugin says
   let pick = { mode: '', map: '' }
   let since = 0
   let gear: Loadout | null = null
@@ -136,7 +173,7 @@ export function createGameyeQueue(deps: QueueDeps) {
     for (const listener of listeners) listener()
     if ('note' in next && next.note) quiet = clock.after(noteFor, () => state === next && set({ ...next, note: '' }))
   }
-  const searching = (note = '', away: '' | 'dropped' | 'reloaded' = '') => set({ phase: 'searching', ...pick, since, note, away })
+  const searching = (note = '', away: '' | 'dropped' | 'reloaded' = '') => set({ phase: 'searching', ...pick, since, note, away, server: region && regionName(region) })
   const live = (mine: number) => mine === run && (stage === 'waiting' || stage === 'searching')
 
   const after = (ms: number, fn: () => void) => void timers.push(clock.after(ms, fn))
@@ -192,6 +229,8 @@ export function createGameyeQueue(deps: QueueDeps) {
     gear = loadout
     since = clock.now()
     solo = false
+    region = ''
+    geo = deps.geo().catch(() => null)
     let first = !resumed // the first socket of a fresh search queues; any later one (or a reload's) looks for a match first
     stage = resumed ? 'searching' : 'waiting'
     if (resumed) searching('', 'reloaded')
@@ -221,7 +260,13 @@ export function createGameyeQueue(deps: QueueDeps) {
   async function enqueue(mine: number, on: QueueSocket) {
     let made: string
     try {
-      made = (await on.addMatchmaker(ticketQuery(BUILD), PLAYERS.min, PLAYERS.max, ticketProperties(BUILD))).ticket
+      const token = await geo
+      if (!live(mine) || socket !== on) return
+      const reply = JSON.parse((await on.rpc(REGION_RPC, token ? JSON.stringify({ geo: token }) : undefined)).payload || '{}')
+      if (typeof reply?.region !== 'string' || !reply.region) throw new Error('no region')
+      if (!live(mine) || socket !== on) return
+      region = reply.region
+      made = (await on.addMatchmaker(ticketQuery(BUILD, region), PLAYERS.min, PLAYERS.max, ticketProperties(BUILD, region, token))).ticket
     } catch {
       if (live(mine) && socket === on) fail(MESSAGES.unreachable)
       return
@@ -252,7 +297,7 @@ export function createGameyeQueue(deps: QueueDeps) {
   async function askSolo(mine: number, on: QueueSocket, resume: boolean) {
     let reply: { status?: unknown; match?: unknown }
     try {
-      reply = JSON.parse((await (resume ? on.rpc(SOLO_RPC, SOLO_RESUME) : on.rpc(SOLO_RPC))).payload || '{}')
+      reply = JSON.parse((await on.rpc(SOLO_RPC, soloPayload(resume, await geo))).payload || '{}')
     } catch {
       if (live(mine) && socket === on) fail(MESSAGES.unreachable)
       return
@@ -288,7 +333,7 @@ export function createGameyeQueue(deps: QueueDeps) {
     ticket = null // a match took it
     letGo()
     stage = 'connecting'
-    set({ phase: 'connecting', ...pick })
+    set({ phase: 'connecting', ...pick, server: m.region ? regionName(m.region) : '' })
     void forget(m, id)
     after(CONNECT_WINDOW, () => mine === run && stage === 'connecting' && fail(MESSAGES.unreachable))
     void reach(mine, m, 0)

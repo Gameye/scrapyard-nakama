@@ -18,8 +18,8 @@ import { freshSession } from './session'
 
 export type Search =
   | { phase: 'idle'; note: string } // note: how the last search ended, in the player's words ('' none)
-  | { phase: 'connecting'; mode: string; map: string }
-  | { phase: 'searching'; mode: string; map: string; since: number; note: string; away: '' | 'dropped' | 'reloaded' } // since: performance.now() at the ticket's start; away: why the socket is being opened again ('' it's open)
+  | { phase: 'connecting'; mode: string; map: string; server?: string }
+  | { phase: 'searching'; mode: string; map: string; since: number; note: string; away: '' | 'dropped' | 'reloaded'; server?: string } // since: performance.now() at the ticket's start; away: why the socket is being opened again ('' it's open); server: where the match's server is, for a Gameye search that knows (gameye-queue.ts), else unset
   | { phase: 'found' | 'accepted'; mode: string; id: string; map: string; players: number; size: number; accepted: number; declined: number; deadline: number; of: number; answered: boolean } // deadline: performance.now(); answered: sent, not yet confirmed
   | { phase: 'seated'; link: Link }
 

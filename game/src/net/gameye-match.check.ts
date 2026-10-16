@@ -1,6 +1,6 @@
 // Self-check for Gameye mode's matchmaking as the page sees it
 // (gameye-queue.ts, the store behind gameye-match.ts): the ticket and its
-// query, the solo fallback, the match notification followed through the
+// query, the geo token and the region it queues in, the solo fallback, the match notification followed through the
 // relay with retries, every failure and its message, the recovery after a
 // socket reconnect, and the build-time pick between it and Classic
 // (matchmaker.ts). A fake Nakama socket, a fake WebSocket and a clock moved
@@ -8,7 +8,7 @@
 // node src/net/gameye-match.check.ts
 import type { Notification } from '@heroiclabs/nakama-js'
 import { matchmakerPlugin } from '../../matchmaker.ts'
-import { createGameyeQueue, CONNECT_WINDOW, MESSAGES, SEARCH_LIMIT, SOLO_AFTER, SOLO_RESUME, SOLO_RPC, ticketProperties, ticketQuery, type QueueSocket } from './gameye-queue.ts'
+import { createGameyeQueue, fetchGeo, CONNECT_WINDOW, GEO_WAIT, MESSAGES, REGION_RPC, SEARCH_LIMIT, SOLO_AFTER, SOLO_RPC, ticketProperties, ticketQuery, type QueueSocket } from './gameye-queue.ts'
 import { BUILD, PROTOCOL } from './protocol.ts'
 
 let checks = 0
@@ -51,8 +51,9 @@ function fakeClock(start = 1_700_000_000_000) {
 
 // --- a fake Nakama socket ------------------------------------------------------------------------
 
-function fakeSocket(rpcReply: () => string = () => '{"status":"starting"}') {
-  const calls = { add: [] as Array<{ query: string; min: number; max: number; strings?: Record<string, string> }>, remove: [] as string[], rpc: [] as string[], payloads: [] as Array<string | undefined> }
+// gameye_region calls are kept apart (calls.region, their payloads); calls.rpc is every other RPC.
+function fakeSocket(rpcReply: () => string = () => '{"status":"starting"}', regionReply: () => string = () => '{"region":"ap-southeast-1"}') {
+  const calls = { add: [] as Array<{ query: string; min: number; max: number; strings?: Record<string, string> }>, remove: [] as string[], rpc: [] as string[], payloads: [] as Array<string | undefined>, region: [] as Array<string | undefined> }
   let tickets = 0
   const socket: QueueSocket & { calls: typeof calls; notify: (n: Notification) => void } = {
     calls,
@@ -64,6 +65,10 @@ function fakeSocket(rpcReply: () => string = () => '{"status":"starting"}') {
       calls.remove.push(ticket)
     },
     async rpc(id, payload) {
+      if (id === REGION_RPC) {
+        calls.region.push(payload)
+        return { id, payload: regionReply() }
+      }
       calls.rpc.push(id ?? '')
       calls.payloads.push(payload)
       return { id, payload: rpcReply() }
@@ -127,10 +132,12 @@ class FakeWebSocket {
 
 const LOADOUT = { vehicle: 'razor', weapon: 'minigun' } as const
 
-function setup(options: { rpcReply?: () => string; stored?: Notification[] } = {}) {
+const GEO = 'v1.geo-token.sig'
+
+function setup(options: { rpcReply?: () => string; regionReply?: () => string; stored?: Notification[]; geo?: () => Promise<string | null> } = {}) {
   const clock = fakeClock()
   const listeners = new Set<(socket: QueueSocket | null) => void>()
-  let live: QueueSocket | null = fakeSocket(options.rpcReply)
+  let live: QueueSocket | null = fakeSocket(options.rpcReply, options.regionReply)
   const store = { stored: options.stored ?? [], forgotten: [] as string[], listed: 0, online: 0 }
   const queue = createGameyeQueue({
     clock,
@@ -141,6 +148,7 @@ function setup(options: { rpcReply?: () => string; stored?: Notification[] } = {
     },
     online: () => void store.online++,
     signIn: async () => ({ guest: true }),
+    geo: options.geo ?? (async () => GEO),
     async notifications() {
       store.listed++
       return store.stored
@@ -184,8 +192,11 @@ const last = () => opened.at(-1)!
   const add = socket().calls.add
   check(add.length === 1 && add[0].min === 2 && add[0].max === 8, 'one ticket, for 2 to 8 players')
   check(add[0].strings?.mode === 'gameye' && add[0].strings?.build === BUILD, 'the ticket carries mode=gameye and this build')
-  check(add[0].query.includes('+properties.mode:gameye') && add[0].query.includes(`+properties.build:${BUILD}`), `the query asks for both (${add[0].query})`)
-  check(queue.currentSearch().phase === 'searching', 'searching once the ticket is in')
+  check(socket().calls.region.length === 1 && socket().calls.region[0] === JSON.stringify({ geo: GEO }), `gameye_region is asked once, with the geo token (${socket().calls.region[0]})`)
+  check(add[0].strings?.region === 'ap-southeast-1' && add[0].strings?.geo === GEO, 'the ticket carries the region it answered and the geo token')
+  check(add[0].query === `+properties.mode:gameye +properties.build:${BUILD} +properties.region:ap-southeast-1`, `the query asks for all three (${add[0].query})`)
+  const searching = queue.currentSearch()
+  check(searching.phase === 'searching' && searching.server === 'Singapore', `searching once the ticket is in, its server named (${JSON.stringify(searching)})`)
   queue.cancelSearch()
   await flush()
   check(socket().calls.remove[0] === 'ticket-1', 'Cancel takes the ticket back')
@@ -199,11 +210,16 @@ const last = () => opened.at(-1)!
   const TERM = /\+properties\.(\w+):("(?:[^"\\]|\\.)*"|\S+)/g
   const holds = (query: string, props: Record<string, string>) =>
     query.replace(TERM, '').trim() === '' && [...query.matchAll(TERM)].every(([, key, raw]) => props[key] === (raw.startsWith('"') ? raw.slice(1, -1).replace(/\\(.)/g, '$1') : raw))
-  const pair = (a: string, b: string) => holds(ticketQuery(a), ticketProperties(b)) && holds(ticketQuery(b), ticketProperties(a))
-  check(pair('abc123def456', 'abc123def456'), 'two pages of one build match')
+  const pair = (a: string, b: string, regionA = 'eu-central-1', regionB = regionA) =>
+    holds(ticketQuery(a, regionA), ticketProperties(b, regionB, 'v1.b')) && holds(ticketQuery(b, regionB), ticketProperties(a, regionA, null))
+  check(pair('abc123def456', 'abc123def456'), 'two pages of one build and region match')
   check(!pair('abc123def456', '0123456789ab'), 'pages of different builds don’t: an old page never lands in a new server')
-  check(!holds(ticketQuery('b1'), { mode: 'classic', build: 'b1' }), 'a ticket without mode=gameye is never matched')
+  check(!pair('abc123def456', 'abc123def456', 'eu-central-1', 'ap-southeast-1') && !pair('b1', 'b1', 'us-east-1', 'eu-central-1'), 'pages queued in different regions don’t')
+  check(!holds(ticketQuery('b1', 'us-east-1'), { mode: 'classic', build: 'b1', region: 'us-east-1' }), 'a ticket without mode=gameye is never matched')
+  check(!holds(ticketQuery('b1', 'us-east-1'), { mode: 'gameye', build: 'b1' }), 'nor one without a region')
   check(pair('dev', 'dev') && pair('odd:build "x"', 'odd:build "x"') && !pair('odd:build "x"', 'odd:build'), 'a build with query characters is quoted, not read as syntax')
+  check(pair('b1', 'b1', 'odd region"', 'odd region"') && !pair('b1', 'b1', 'odd region"', 'odd'), 'a region too')
+  check(!('geo' in ticketProperties('b1', 'us-east-1', null)), 'no geo property without a token')
 }
 
 // --- a live gameye_match: through the relay, seated with the seat token -------------------------------
@@ -212,9 +228,10 @@ const last = () => opened.at(-1)!
   const { clock, queue, socket, store } = setup()
   void queue.findMatch('ffa', 'scrapyard', LOADOUT)
   await flush()
-  socket().notify(matchNote(match(clock.unix())))
+  socket().notify(matchNote(match(clock.unix(), { region: 'us-east-1' })))
   await flush()
-  check(queue.currentSearch().phase === 'connecting', 'a gameye_match moves the store from searching to connecting')
+  const connecting = queue.currentSearch()
+  check(connecting.phase === 'connecting' && connecting.server === 'Virginia', `a gameye_match moves the store from searching to connecting, naming the match's own server (${JSON.stringify(connecting)})`)
   check(store.forgotten.includes('n-1'), 'and the persistent notification it used is deleted')
   check(last().url === 'wss://relay.example.test/match?token=v1.relay%2Btoken%2F%3D.sig', `the page opens <relay_url>/match?token=<relay_token> (${last().url})`)
   last().accept()
@@ -276,7 +293,7 @@ const last = () => opened.at(-1)!
   check(socket().calls.rpc.length === 0 && socket().calls.remove.length === 0, 'nothing before 12 s: a pair can still match')
   await clock.advance(100)
   check(socket().calls.remove[0] === 'ticket-1' && socket().calls.rpc[0] === SOLO_RPC, '12 s alone: the ticket is removed and gameye_solo_match called')
-  check(socket().calls.payloads[0] === undefined, 'a fresh solo call has no payload: the plugin starts a new match, never an old one')
+  check(socket().calls.payloads[0] === JSON.stringify({ geo: GEO }), `a fresh solo call carries only the geo token: the plugin starts a new match, never an old one (${socket().calls.payloads[0]})`)
   const now = queue.currentSearch()
   check(now.phase === 'searching' && !!now.note, 'still searching, saying a match with bots is on its way')
   socket().notify(matchNote(match(clock.unix())))
@@ -313,11 +330,113 @@ const last = () => opened.at(-1)!
   await flush()
   swap(fakeSocket(() => JSON.stringify({ status: 'matched', match: match(clock0.unix(), { relay_token: 'resumed-relay' }) })))
   await flush()
-  check(socket().calls.rpc[0] === SOLO_RPC && socket().calls.payloads[0] === SOLO_RESUME, `back on a socket after going solo: the solo call says it resumes (${socket().calls.payloads[0]})`)
+  check(socket().calls.rpc[0] === SOLO_RPC && socket().calls.payloads[0] === JSON.stringify({ resume: true, geo: GEO }), `back on a socket after going solo: the solo call says it resumes, with the geo token (${socket().calls.payloads[0]})`)
   check(socket().calls.add.length === 0, 'and no new ticket')
   check(queue.currentSearch().phase === 'connecting' && last().url.endsWith('token=resumed-relay'), 'the match it was handed is followed')
   queue.cancelSearch()
   await flush()
+}
+
+// --- the geo step never holds the search up ---------------------------------------------------------------
+
+// No geo token (the relay down, or no VITE_GAMEYE_RELAY): gameye_region with no payload, the plugin's fallback region, and on.
+{
+  const { clock, queue, socket } = setup({ geo: async () => null, regionReply: () => '{"region":"eu-central-1"}' })
+  void queue.findMatch('ffa', 'scrapyard', LOADOUT)
+  await flush()
+  const add = socket().calls.add
+  check(socket().calls.region.length === 1 && socket().calls.region[0] === undefined, 'without a geo token, gameye_region is called with no payload')
+  check(add.length === 1 && add[0].strings?.region === 'eu-central-1' && !('geo' in (add[0].strings ?? {})), 'the ticket carries the region it answered, and no geo property')
+  check(add[0].query.endsWith('+properties.region:eu-central-1'), 'and the query asks for that region')
+  await clock.advance(SOLO_AFTER)
+  check(socket().calls.payloads[0] === undefined, 'a fresh solo call without a geo token has no payload, as before')
+  queue.cancelSearch()
+  await flush()
+}
+
+// A geo fetch that throws is the same as none.
+{
+  const { queue, socket } = setup({ geo: async () => Promise.reject(new Error('offline')) })
+  void queue.findMatch('ffa', 'scrapyard', LOADOUT)
+  await flush()
+  check(socket().calls.region[0] === undefined && socket().calls.add.length === 1, 'a failed geo step still queues')
+  queue.cancelSearch()
+  await flush()
+}
+
+// A geo token is fetched once per search, while the Nakama socket comes up; a socket that drops and comes back asks the region again.
+{
+  let fetched = 0
+  const { clock, queue, swap } = setup({ geo: async () => (fetched++, GEO) })
+  void queue.findMatch('ffa', 'scrapyard', LOADOUT)
+  await flush()
+  swap(null)
+  await flush()
+  await clock.advance(1000)
+  const next = fakeSocket()
+  swap(next)
+  await flush()
+  check(fetched === 1, `one /geo per search (${fetched})`)
+  check(next.calls.region.length === 1 && next.calls.add[0]?.strings?.region === 'ap-southeast-1', 'the new socket asks the region again before its ticket')
+  queue.cancelSearch()
+  await flush()
+}
+
+// gameye_region failing (Nakama down) fails like the ticket would.
+{
+  const { queue, socket } = setup()
+  socket().rpc = async () => Promise.reject(new Error('socket closed'))
+  void queue.findMatch('ffa', 'scrapyard', LOADOUT)
+  await flush()
+  const now = queue.currentSearch()
+  check(now.phase === 'idle' && now.note === MESSAGES.unreachable && socket().calls.add.length === 0, 'a gameye_region the socket can’t answer: unreachable, no ticket')
+}
+
+// An unknown region id is named as it is; a match without a region names none.
+{
+  const { clock, queue, socket } = setup()
+  void queue.findMatch('ffa', 'scrapyard', LOADOUT)
+  await flush()
+  socket().notify(matchNote(match(clock.unix(), { region: 'me-central-1' })))
+  await flush()
+  const now = queue.currentSearch()
+  check(now.phase === 'connecting' && now.server === 'me-central-1', 'an unknown region is shown by its id')
+  queue.cancelSearch()
+  await flush()
+}
+{
+  const { clock, queue, socket } = setup()
+  void queue.findMatch('ffa', 'scrapyard', LOADOUT)
+  await flush()
+  socket().notify(matchNote(match(clock.unix())))
+  await flush()
+  const now = queue.currentSearch()
+  check(now.phase === 'connecting' && !now.server, 'a match without a region names no server')
+  queue.cancelSearch()
+  await flush()
+}
+
+// fetchGeo: GET <relay>/geo, its token, or null on anything else, and never later than GEO_WAIT.
+{
+  const clock = fakeClock()
+  const asked: string[] = []
+  const answer = (respond: (signal: AbortSignal) => Promise<Response>) =>
+    (async (url: string | URL | Request, init?: RequestInit) => (asked.push(String(url)), respond(init!.signal!))) as typeof fetch
+  check((await fetchGeo('https://relay.example/', clock, answer(async () => Response.json({ geo: GEO })))) === GEO && asked.at(-1) === 'https://relay.example/geo', `the token from <relay>/geo (${asked.at(-1)})`)
+  check((await fetchGeo(undefined, clock, answer(async () => Response.json({ geo: GEO })))) === null && asked.length === 1, 'no relay set: no fetch, no token')
+  check((await fetchGeo('', clock, answer(async () => Response.json({ geo: GEO })))) === null, 'an empty one neither')
+  check((await fetchGeo('https://relay.example', clock, answer(async () => Response.json({ error: 'no location' }, { status: 503 })))) === null, '503 no location: null')
+  check((await fetchGeo('https://relay.example', clock, answer(async () => Promise.reject(new TypeError('Failed to fetch'))))) === null, 'a refused fetch (CORS, offline): null')
+  check((await fetchGeo('https://relay.example', clock, answer(async () => new Response('not json')))) === null, 'a body that isn’t JSON: null')
+  check((await fetchGeo('https://relay.example', clock, answer(async () => Response.json({ geo: 7 })))) === null, 'a geo that isn’t a string: null')
+  let aborted = false
+  const hung = fetchGeo('https://relay.example', clock, answer((signal) => new Promise(() => signal.addEventListener('abort', () => (aborted = true)))))
+  let settled: string | null | undefined
+  void hung.then((geo) => (settled = geo))
+  await clock.advance(GEO_WAIT - 1)
+  check(settled === undefined, 'a slow relay is waited for up to GEO_WAIT')
+  await clock.advance(1)
+  check(settled === null && aborted, 'then given up on, its request aborted')
 }
 
 // --- relay upgrades that keep failing: 15 s, then the unreachable message ------------------------------
