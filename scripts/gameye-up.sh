@@ -4,7 +4,7 @@
 # GAMEYE_API_TOKEN is required), then:
 #   1. makes sure your Gameye application exists and is set up for the game
 #      server image (created, or updated if it exists), registers the image's
-#      tag and waits until Gameye has it in your region;
+#      tag and waits until Gameye has it in each of your regions;
 #   2. builds the Nakama image with the plugin baked in (nakama/Dockerfile),
 #      or pulls NAKAMA_IMAGE, and starts it with Postgres (compose.gameye.yml);
 #   3. starts the relay (edge/, wrangler dev --env dev) and the page in
@@ -59,6 +59,8 @@ GAMEYE_API_URL=${GAMEYE_API_URL:-https://api.sandbox-gameye.gameye.net}
 GAMEYE_API_URL=${GAMEYE_API_URL%/}
 GAMEYE_APPLICATION=${GAMEYE_APPLICATION:-scrapyard-nakama}
 GAMEYE_REGION=${GAMEYE_REGION:-eu-central-1}
+GAMEYE_REGIONS=${GAMEYE_REGIONS:-$GAMEYE_REGION}
+GAMEYE_REGIONS=${GAMEYE_REGIONS// /}
 GAMEYE_NODE_POOL=${GAMEYE_NODE_POOL:-trial}
 GAMEYE_GAME_REGISTRY=${GAMEYE_GAME_REGISTRY:-ghcr}
 GAMEYE_TAG_WAIT=${GAMEYE_TAG_WAIT:-900}
@@ -76,10 +78,15 @@ RELAY_URL=ws://localhost:$RELAY_PORT
 for name in GAMEYE_APPLICATION GAMEYE_REGION GAMEYE_GAME_TAG; do
   [[ ${!name} =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "$name is ${!name}: letters, digits, '.', '_' and '-' only"
 done
+IFS=, read -ra regions <<< "$GAMEYE_REGIONS"
+for region in "${regions[@]}"; do
+  [[ $region =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "GAMEYE_REGIONS is $GAMEYE_REGIONS: a comma list of regions"
+done
+[[ ,$GAMEYE_REGIONS, == *,$GAMEYE_REGION,* ]] || die "GAMEYE_REGIONS ($GAMEYE_REGIONS) must list GAMEYE_REGION ($GAMEYE_REGION), the plugin's fallback"
 for name in PAGE_PORT RELAY_PORT GAMEYE_TAG_WAIT; do
   [[ ${!name} =~ ^[0-9]+$ ]] || die "$name is ${!name}: a number"
 done
-export GAMEYE_API_URL GAMEYE_APPLICATION GAMEYE_REGION GAMEYE_NODE_POOL GAMEYE_GAME_REGISTRY GAMEYE_GAME_IMAGE GAMEYE_GAME_TAG RELAY_URL
+export GAMEYE_API_URL GAMEYE_APPLICATION GAMEYE_REGION GAMEYE_REGIONS GAMEYE_NODE_POOL GAMEYE_GAME_REGISTRY GAMEYE_GAME_IMAGE GAMEYE_GAME_TAG RELAY_URL
 
 compose() { run "$CONTAINER" compose -f compose.gameye.yml "$@"; }
 
@@ -120,7 +127,7 @@ if ! dry; then
   done
 fi
 
-say "Gameye: $GAMEYE_API_URL, application $GAMEYE_APPLICATION in $GAMEYE_REGION, image $GAMEYE_GAME_IMAGE:$GAMEYE_GAME_TAG ($GAMEYE_GAME_REGISTRY)"
+say "Gameye: $GAMEYE_API_URL, application $GAMEYE_APPLICATION in $GAMEYE_REGIONS (fallback $GAMEYE_REGION), image $GAMEYE_GAME_IMAGE:$GAMEYE_GAME_TAG ($GAMEYE_GAME_REGISTRY)"
 if [ "$PUSH" = 0 ]; then
   [ "$GAMEYE_GAME_TAG" = "sha-$commit" ] || warn "GAMEYE_GAME_TAG isn't this checkout's commit (sha-$commit): the page built here may not match the image's build, and the game server would refuse it (\"Game updated\")"
   [ -z "$(git status --porcelain -- game/src game/server game/package-lock.json)" ] || warn "game/ has uncommitted changes: the page built here won't match the image at $GAMEYE_GAME_TAG. Commit and let release.yml publish it, or use --push-game-image"
@@ -193,7 +200,7 @@ app_body() { # post | put
     const app = {
       registry: e.GAMEYE_GAME_REGISTRY, repository: e.GAMEYE_GAME_IMAGE, tagKeep: 2, networkMode: "bridge",
       limits: { cpu: 0.5, ram: 512 }, reservation: { cpu: 0.5, ram: 512 }, nodePool: e.GAMEYE_NODE_POOL,
-      regions: [e.GAMEYE_REGION], ports: [{ requested: 7360, protocol: "tcp", tls: false }],
+      regions: e.GAMEYE_REGIONS.split(","), ports: [{ requested: 7360, protocol: "tcp", tls: false }],
     }
     process.stdout.write(JSON.stringify(process.argv[1] === "post" ? { name: e.GAMEYE_APPLICATION, ...app } : app))' "$1"
 }
@@ -244,25 +251,27 @@ if ! dry; then
   esac
 fi
 
-dry && say "  then every 10 s until it says {\"exists\":true} (at most $GAMEYE_TAG_WAIT s):"
-api GET "/tag/$GAMEYE_REGION/$app/$tag"
-if ! dry; then
-  waited=0
-  while :; do
-    case $API_STATUS in
-      200) [ -z "$(ask 'body?.exists === true')" ] || break ;;
-      404) ;; # not there yet
-      *) refused "Checking tag $tag in $GAMEYE_REGION" regions:read ;;
-    esac
-    [ "$waited" -lt "$GAMEYE_TAG_WAIT" ] || die "tag $tag still isn't ready in $GAMEYE_REGION after $GAMEYE_TAG_WAIT s (HTTP $API_STATUS); run again to keep waiting, or check the image in Gameye's dashboard"
-    [ "$waited" -gt 0 ] || say "waiting for Gameye to have $tag in $GAMEYE_REGION..."
-    sleep 10
-    waited=$((waited + 10))
-    api GET "/tag/$GAMEYE_REGION/$app/$tag"
-  done
-  say "tag $tag: ready in $GAMEYE_REGION"
-  rm -rf "$api_dir"
-fi
+for region in "${regions[@]}"; do
+  dry && say "  then every 10 s until it says {\"exists\":true} (at most $GAMEYE_TAG_WAIT s):"
+  api GET "/tag/$region/$app/$tag"
+  if ! dry; then
+    waited=0
+    while :; do
+      case $API_STATUS in
+        200) [ -z "$(ask 'body?.exists === true')" ] || break ;;
+        404) ;; # not there yet
+        *) refused "Checking tag $tag in $region" regions:read ;;
+      esac
+      [ "$waited" -lt "$GAMEYE_TAG_WAIT" ] || die "tag $tag still isn't ready in $region after $GAMEYE_TAG_WAIT s (HTTP $API_STATUS); run again to keep waiting, or check the image in Gameye's dashboard"
+      [ "$waited" -gt 0 ] || say "waiting for Gameye to have $tag in $region..."
+      sleep 10
+      waited=$((waited + 10))
+      api GET "/tag/$region/$app/$tag"
+    done
+    say "tag $tag: ready in $region"
+  fi
+done
+dry || rm -rf "$api_dir"
 
 # --- Nakama and Postgres --------------------------------------------------------------------------------
 
@@ -299,7 +308,7 @@ else
 fi
 
 # the page: Gameye mode, against this Nakama (Vite takes these over game/.env*)
-export VITE_MATCHMAKER=gameye VITE_NAKAMA_HOST=127.0.0.1 VITE_NAKAMA_PORT=7350 VITE_NAKAMA_SSL=false VITE_NAKAMA_KEY=defaultkey
+export VITE_MATCHMAKER=gameye VITE_NAKAMA_HOST=127.0.0.1 VITE_NAKAMA_PORT=7350 VITE_NAKAMA_SSL=false VITE_NAKAMA_KEY=defaultkey VITE_GAMEYE_RELAY=http://localhost:$RELAY_PORT
 (cd game && run npx vite build --outDir dist-gameye --emptyOutDir --logLevel warn)
 
 if dry; then

@@ -36,6 +36,7 @@ services:
       GAMEYE_API_IMAGE: ${GAMEYE_APPLICATION:?set by scripts/gameye-up.sh}
       GAMEYE_API_IMAGE_VERSION: ${GAMEYE_GAME_TAG:?set by scripts/gameye-up.sh}
       GAMEYE_API_REGION: ${GAMEYE_REGION:?set by scripts/gameye-up.sh}
+      GAMEYE_API_REGIONS: ${GAMEYE_REGIONS:?set by scripts/gameye-up.sh}
       RELAY_SECRET: ${RELAY_SECRET:?set by scripts/gameye-up.sh}
       RELAY_URL: ${RELAY_URL:?set by scripts/gameye-up.sh}
     depends_on:
