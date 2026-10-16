@@ -51,7 +51,7 @@ sequenceDiagram
 
 Step by step:
 
-1. **The page finds its region.** It fetches a geo token from the relay (`GET /geo`): where Cloudflare places the player, signed with `RELAY_SECRET` so the page can carry it but not make it up. The RPC `gameye_region` answers the enabled region nearest that point, or `GAMEYE_API_REGION` when there is no token or it's bad. A search never waits more than 2 seconds for the token.
+1. **The page finds its region.** It fetches a geo token from the relay (`GET /geo`): where Cloudflare places the player, signed with `RELAY_SECRET` so the page can carry it but not make it up. The RPC `gameye_region` answers the enabled region nearest that point, or `GAMEYE_API_REGION` when there is no token or it's bad. A search never waits more than 2 seconds for the token. The arena screen's Server picker offers Auto (nearest) or any enabled region, so friends far apart can meet in one: a picked region is the answer, its ticket carries `pick=1`, and the plugin passes it to `Create` as `gameye.region`, which overrides the latency estimates.
 2. **The page queues.** In Gameye mode the page puts a ticket on Nakama's own matchmaker with the properties `mode=gameye`, `build=<the page's build id>`, `region=<its region>` and the geo token, for 2 to 8 players, and only matches tickets with the same build and region. The build id keeps pages of different builds out of one match: a page and a game server of different builds don't speak the same protocol. The region keeps players on different continents apart.
 3. **Alone for 12 seconds,** the page removes its ticket and calls the RPC `gameye_solo_match`. The player gets a match of their own, and bots fill the other seats.
 4. **The plugin starts a session.** Nakama's `MatchmakerMatched` hook (or the RPC) calls the Fleet Manager's `Create` with each player's estimated latency to every enabled region (from their geo token), and the Fleet Manager picks the region where the worst of those is lowest. It starts a Gameye session there, waits for its address and joins the players to it.
@@ -99,7 +99,7 @@ for _, entry := range entries {
 	if mode, _ := entry.GetProperties()[modeProperty].(string); mode != modeGameye {
 		return "", nil
 	}
-	// ...collect the user ids...
+	// ...collect the user ids, each ticket's region and whether any has pick=1...
 }
 // ...mark the players as starting, leaving out any already starting or holding good tokens...
 
@@ -108,8 +108,10 @@ var latencies []runtime.FleetUserLatencies
 for _, userId := range players {
 	latencies = append(latencies, m.estimates(userId, geo[userId])...)
 }
+// A region the tickets agree on, picked by one of them, wins over the estimates.
+forced, _ := pickedRegion(regions, chosen, m.regions)
 // The first ticket traces the Gameye session back to the matchmaker.
-m.start(ctx, players, latencies, entries[0].GetTicket())
+m.start(ctx, players, latencies, entries[0].GetTicket(), forced)
 return "", nil
 ```
 
@@ -316,6 +318,7 @@ The relay deploys on its own with Wrangler; the commands are at the top of [`edg
 
 - **Latency is estimated, not measured.** Browsers can't ping Gameye's ICMP ping targets, so the plugin estimates each player's round trip from where Cloudflare places them (km / 86 + 33 ms, fitted to pings from one place). Only the order between regions decides the match. A VPN or a mobile carrier can place a player on the wrong continent.
 - **Players are split by region.** Nobody is matched across regions, so with few players online more matches start with bots.
+- **Picking a region matches you with everyone in it, at whatever latency you have to it.** A pick wins over the estimates for the whole match, so the players who queued there as their nearest play on your pick's server too.
 - **No backfill or rejoin.** A match is the players matched at the start, plus bots. A player whose socket drops can't get back into the match, and nobody new joins a running one.
 - **No spend caps.** Spending is bounded only by each session ending itself (after the match, when idle, or after 20 minutes) and by Gameye's TTL (30 minutes by default). There is no cap on concurrent sessions and no per-player rate limit.
 - **sslip.io in the relay.** Cloudflare Workers can't fetch a bare IP, so the relay turns the container's IP into a hostname under `sslip.io`, a public wildcard DNS service. Set `GAMEYE_IPV4_DNS_SUFFIX` to use your own wildcard zone.
