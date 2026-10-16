@@ -1,5 +1,7 @@
 # Browser-based Multiplayer Vehicle Combat
 
+[![Discord](https://img.shields.io/badge/Discord-join%20chat-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/QvJ3KH5max)
+
 ## Gameye fork
 
 This is [Gameye](https://gameye.com)'s fork of Scrapyard by A. A. Sumitro
