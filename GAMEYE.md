@@ -51,13 +51,14 @@ sequenceDiagram
 
 Step by step:
 
-1. **The page queues.** In Gameye mode the page puts a ticket on Nakama's own matchmaker with the properties `mode=gameye` and `build=<the page's build id>`, for 2 to 8 players. The build id keeps pages of different builds out of one match: a page and a game server of different builds don't speak the same protocol.
-2. **Alone for 12 seconds,** the page removes its ticket and calls the RPC `gameye_solo_match`. The player gets a match of their own, and bots fill the other seats.
-3. **The plugin starts a session.** Nakama's `MatchmakerMatched` hook (or the RPC) calls the Fleet Manager's `Create`. The Fleet Manager starts a Gameye session, waits for its address and joins the players to it.
-4. **The plugin tells the players.** Each player gets a `gameye_match` notification with the relay's URL, a relay token and their own seat token.
-5. **The page connects through the relay.** The browser can only open `wss://` sockets from an `https://` page, and Gameye containers listen on a bare IP and port. The relay terminates TLS and opens a plain WebSocket to the container. It takes the container's address from the signed relay token, never from the page.
-6. **The game server seats the player.** The page's hello carries the seat token. The game server checks it with this match's secret and seats the player.
-7. **The session ends itself.** After the match's results, when nobody shows up, when the last player leaves, or at a hard time limit, the process exits and Gameye ends the session. Gameye's TTL is the backstop. After the results the page is told the match is over and keeps the results up, with Play again (a new search) and Exit.
+1. **The page finds its region.** It fetches a geo token from the relay (`GET /geo`): where Cloudflare places the player, signed with `RELAY_SECRET` so the page can carry it but not make it up. The RPC `gameye_region` answers the enabled region nearest that point, or `GAMEYE_API_REGION` when there is no token or it's bad. A search never waits more than 2 seconds for the token.
+2. **The page queues.** In Gameye mode the page puts a ticket on Nakama's own matchmaker with the properties `mode=gameye`, `build=<the page's build id>`, `region=<its region>` and the geo token, for 2 to 8 players, and only matches tickets with the same build and region. The build id keeps pages of different builds out of one match: a page and a game server of different builds don't speak the same protocol. The region keeps players on different continents apart.
+3. **Alone for 12 seconds,** the page removes its ticket and calls the RPC `gameye_solo_match`. The player gets a match of their own, and bots fill the other seats.
+4. **The plugin starts a session.** Nakama's `MatchmakerMatched` hook (or the RPC) calls the Fleet Manager's `Create` with each player's estimated latency to every enabled region (from their geo token), and the Fleet Manager picks the region where the worst of those is lowest. It starts a Gameye session there, waits for its address and joins the players to it.
+5. **The plugin tells the players.** Each player gets a `gameye_match` notification with the relay's URL, a relay token, their own seat token and the match's region, which the page shows ("Server: Singapore").
+6. **The page connects through the relay.** The browser can only open `wss://` sockets from an `https://` page, and Gameye containers listen on a bare IP and port. The relay terminates TLS and opens a plain WebSocket to the container. It takes the container's address from the signed relay token, never from the page.
+7. **The game server seats the player.** The page's hello carries the seat token. The game server checks it with this match's secret and seats the player.
+8. **The session ends itself.** After the match's results, when nobody shows up, when the last player leaves, or at a hard time limit, the process exits and Gameye ends the session. Gameye's TTL is the backstop. After the results the page is told the match is over and keeps the results up, with Play again (a new search) and Exit.
 
 If the session can't start, players get a `gameye_failed` notification with a reason, and the page offers to try again. The plugin retries twice on "no capacity" (HTTP 420) and on Gameye server errors (5xx), and gives up at once on errors a retry won't fix, such as a missing scope.
 
@@ -78,7 +79,7 @@ if err := initializer.RegisterFleetManager(fm); err != nil {
 	return err
 }
 
-matches := newGameyeMatches(fm, nk, logger, cfg.relaySecret, cfg.relayUrl)
+matches := newGameyeMatches(fm, nk, logger, cfg.relaySecret, cfg.relayUrl, cfg.regions, cfg.fleet.Region)
 if err := initializer.RegisterMatchmakerMatched(matches.matched); err != nil {
 	return err
 }
@@ -102,8 +103,13 @@ for _, entry := range entries {
 }
 // ...mark the players as starting, leaving out any already starting or holding good tokens...
 
+// Each player's estimated latency to every enabled region, from their ticket's geo token.
+var latencies []runtime.FleetUserLatencies
+for _, userId := range players {
+	latencies = append(latencies, m.estimates(userId, geo[userId])...)
+}
 // The first ticket traces the Gameye session back to the matchmaker.
-m.start(ctx, players, entries[0].GetTicket())
+m.start(ctx, players, latencies, entries[0].GetTicket())
 return "", nil
 ```
 
@@ -185,7 +191,7 @@ The local setup uses one token for both, so it needs all six scopes.
 
 - **Networking:** bridge.
 - **Port:** `7360/tcp`, without Gameye TLS. The game server listens on 7360 (`PORT` in the [`Dockerfile`](Dockerfile)), and the plugin's `GAMEYE_API_PORT` defaults to `7360/tcp`.
-- **Region:** one, `eu-central-1` by default (`GAMEYE_REGION`). The plugin always starts sessions in `GAMEYE_API_REGION`.
+- **Regions:** `eu-central-1` by default (`GAMEYE_REGION`, also the fallback). For more, list them in `GAMEYE_REGIONS` (for example `eu-central-1,us-east-1,ap-southeast-1`): the script puts them all in the application and waits for the tag in each. A region the plugin should choose must have its servers' location in [`regions.go`](nakama/modules-src/regions.go)'s table; it has the three above.
 - **Resources:** 0.5 CPU and 512 MiB, on the `trial` node pool for self-serve accounts (`GAMEYE_NODE_POOL`).
 - **Image:** the game server image from the [`Dockerfile`](Dockerfile), public, so Gameye can pull it without credentials.
 - **No warm pool.** Gameye serves warm-pool sessions from containers started before the request, and those never see the env passed to `Create`. Without `SEAT_SECRET` the game server refuses to start. The script doesn't configure a warm pool. If one is set for the application and region in Gameye's dashboard, turn it off.
@@ -201,7 +207,8 @@ Gameye echoes container env back in a session's labels. The Fleet Manager strips
 | `GAMEYE_API_TOKEN` | yes | | Token with the session scopes |
 | `GAMEYE_API_IMAGE` | yes | | Gameye application name |
 | `GAMEYE_API_IMAGE_VERSION` | yes | | Image tag to run |
-| `GAMEYE_API_REGION` | yes | | Region |
+| `GAMEYE_API_REGION` | yes | | Fallback region, and the only one when `GAMEYE_API_REGIONS` is unset |
+| `GAMEYE_API_REGIONS` | no | `GAMEYE_API_REGION` | Enabled regions, a comma list that includes `GAMEYE_API_REGION`; each must be in `regions.go`'s table |
 | `RELAY_SECRET` | yes | | At least 32 bytes; the relay's Worker secret must be the same |
 | `RELAY_URL` | yes | | The relay's origin: `wss://...`, or `ws://localhost:8790` locally |
 | `GAMEYE_API_URL` | no | `https://api.sandbox-gameye.gameye.net` | |
@@ -303,12 +310,12 @@ Nakama's console is at `http://127.0.0.1:7351` (admin / password: `compose.gamey
 
 The public demo at https://scrapyard.gameye.com runs Nakama, its Postgres and the play page on a shared Ubuntu host with Podman, behind that host's Caddy, and the relay on Cloudflare: [`deploy/gameye-ovh/README.md`](deploy/gameye-ovh/README.md).
 
-The relay deploys on its own with Wrangler; the commands are at the top of [`edge/wrangler.jsonc`](edge/wrangler.jsonc). Its `RELAY_SECRET` must equal the plugin's, and its `ALLOWED_ORIGINS` must name your play site. The game server image also has the allowed origins built in (the `ALLOWED_ORIGINS` build argument in the [`Dockerfile`](Dockerfile)), so build it with your play site's origin.
+The relay deploys on its own with Wrangler; the commands are at the top of [`edge/wrangler.jsonc`](edge/wrangler.jsonc). Its `RELAY_SECRET` must equal the plugin's, and its `ALLOWED_ORIGINS` must name your play site (`/geo` answers only those origins too). Build the page with `VITE_GAMEYE_RELAY` set to the relay's `https://` origin; without it the page skips `/geo` and every match starts in `GAMEYE_API_REGION`. The game server image also has the allowed origins built in (the `ALLOWED_ORIGINS` build argument in the [`Dockerfile`](Dockerfile)), so build it with your play site's origin.
 
 ## Limitations
 
-- **One region.** Every session starts in `GAMEYE_API_REGION`.
-- **No latency-based placement.** The Fleet Manager (v0.2.0) can pick a match's region from player latencies or a `gameye.region` metadata key, but the plugin passes neither, so it falls back to `GAMEYE_API_REGION`. Measuring latencies to Gameye's `/available-location` ping targets and passing them in is follow-up work.
+- **Latency is estimated, not measured.** Browsers can't ping Gameye's ICMP ping targets, so the plugin estimates each player's round trip from where Cloudflare places them (km / 86 + 33 ms, fitted to pings from one place). Only the order between regions decides the match. A VPN or a mobile carrier can place a player on the wrong continent.
+- **Players are split by region.** Nobody is matched across regions, so with few players online more matches start with bots.
 - **No backfill or rejoin.** A match is the players matched at the start, plus bots. A player whose socket drops can't get back into the match, and nobody new joins a running one.
 - **No spend caps.** Spending is bounded only by each session ending itself (after the match, when idle, or after 20 minutes) and by Gameye's TTL (30 minutes by default). There is no cap on concurrent sessions and no per-player rate limit.
 - **sslip.io in the relay.** Cloudflare Workers can't fetch a bare IP, so the relay turns the container's IP into a hostname under `sslip.io`, a public wildcard DNS service. Set `GAMEYE_IPV4_DNS_SUFFIX` to use your own wildcard zone.
