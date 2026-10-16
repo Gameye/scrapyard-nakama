@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// The relay and seat tokens, as the root AGENTS.md (Contracts) lays them out:
+// The relay, seat and geo tokens, as the root AGENTS.md (Contracts) lays them out:
 // "v1.<payload>.<signature>", the payload unpadded base64url JSON, the
 // signature unpadded base64url HMAC-SHA256 of "v1.<payload>" keyed with the
 // secret's bytes. The game server and the relay check them in TypeScript;
@@ -29,6 +29,7 @@ const (
 
 	tokenRelay = "relay"
 	tokenSeat  = "seat"
+	tokenGeo   = "geo"
 )
 
 // relayClaims tell the relay which container to open a socket to. Signed with
@@ -48,6 +49,16 @@ type seatClaims struct {
 	SessionId string `json:"sid"`
 	UserId    string `json:"uid"`
 	Exp       int64  `json:"exp"`
+}
+
+// geoClaims say where the relay (Cloudflare) placed a player. The relay signs
+// them with RELAY_SECRET, so the page can carry them but not make them up.
+// Pointers: a missing coordinate is refused, not read as 0.
+type geoClaims struct {
+	Type string   `json:"t"`
+	Lat  *float64 `json:"lat"`
+	Lon  *float64 `json:"lon"`
+	Exp  int64    `json:"exp"`
 }
 
 var errBadToken = errors.New("bad token")
@@ -112,6 +123,22 @@ func verifySeatToken(secret []byte, token string, now time.Time) (seatClaims, er
 		return seatClaims{}, fmt.Errorf("%w: expired", errBadToken)
 	}
 	return claims, nil
+}
+
+// verifyGeoToken checks a geo token the relay signed and returns its point.
+func verifyGeoToken(secret []byte, token string, now time.Time) (point, error) {
+	var claims geoClaims
+	if err := verify(secret, token, &claims); err != nil {
+		return point{}, err
+	}
+	if claims.Type != tokenGeo || claims.Lat == nil || claims.Lon == nil ||
+		*claims.Lat < -90 || *claims.Lat > 90 || *claims.Lon < -180 || *claims.Lon > 180 {
+		return point{}, errBadToken
+	}
+	if now.Unix() > claims.Exp {
+		return point{}, fmt.Errorf("%w: expired", errBadToken)
+	}
+	return point{*claims.Lat, *claims.Lon}, nil
 }
 
 func sign(secret []byte, claims any) (string, error) {

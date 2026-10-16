@@ -1,9 +1,11 @@
 // The Scrapyard relay: TLS for the browser's game socket. The page opens
 // /match?token=<relay token>; the container address comes only from that
 // token, which the Nakama plugin signs with RELAY_SECRET (root AGENTS.md,
-// Contracts). Nothing is logged: URLs carry tokens.
+// Contracts). GET /geo signs where Cloudflare places the player, for the
+// plugin to pick their region. Nothing is logged: URLs carry tokens.
 
 const MAX_TOKEN_LENGTH = 1024
+const GEO_TTL = 600 // s
 const MIN_SECRET_BYTES = 32
 const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/
 const BASE64URL = /^[A-Za-z0-9_-]*$/
@@ -18,14 +20,28 @@ function decodeBase64url(text) {
   return Uint8Array.from(binary, (c) => c.charCodeAt(0))
 }
 
+/** @param {Uint8Array} bytes */
+const encodeBase64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+
 /**
- * The relay half of nakama/modules-src/tokens.go verifyRelayToken.
+ * nakama/modules-src/tokens.go sign: v1.<payload>.<signature>.
+ * @param {string} secret
+ * @param {object} claims
+ */
+export async function signToken(secret, claims) {
+  const signed = `v1.${encodeBase64url(encoder.encode(JSON.stringify(claims)))}`
+  const key = await crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  return `${signed}.${encodeBase64url(new Uint8Array(await crypto.subtle.sign('HMAC', key, encoder.encode(signed))))}`
+}
+
+/**
+ * nakama/modules-src/tokens.go verify: a token's claims if its signature is
+ * good, else null. The caller checks `t` and the rest.
  * @param {string} secret
  * @param {string} token
- * @param {number} now unix seconds
- * @returns {Promise<{ sid: string, host: string, port: number, exp: number } | null>}
+ * @returns {Promise<Record<string, unknown> | null>}
  */
-export async function verifyRelayToken(secret, token, now) {
+export async function readToken(secret, token) {
   if (typeof token !== 'string' || token.length > MAX_TOKEN_LENGTH) return null
   const parts = token.split('.')
   if (parts.length !== 3 || parts[0] !== 'v1' || parts[1] === '') return null
@@ -43,6 +59,19 @@ export async function verifyRelayToken(secret, token, now) {
     return null
   }
   if (typeof claims !== 'object' || claims === null || Array.isArray(claims)) return null
+  return claims
+}
+
+/**
+ * The relay half of nakama/modules-src/tokens.go verifyRelayToken.
+ * @param {string} secret
+ * @param {string} token
+ * @param {number} now unix seconds
+ * @returns {Promise<{ sid: string, host: string, port: number, exp: number } | null>}
+ */
+export async function verifyRelayToken(secret, token, now) {
+  const claims = await readToken(secret, token)
+  if (!claims) return null
   const { t, sid, host, port, exp } = claims
   if (t !== 'relay' || typeof sid !== 'string' || sid === '' || typeof host !== 'string' || !IPV4.test(host)) return null
   if (!Number.isInteger(port) || port < 1 || port > 65535 || !Number.isInteger(exp)) return null
@@ -85,15 +114,48 @@ export function upstreamTarget(env, { host, port }) {
 }
 
 const refuse = (status, text) => new Response(text, { status, headers: { 'cache-control': 'no-store' } })
+const misconfigured = (env) => !env.RELAY_SECRET || encoder.encode(env.RELAY_SECRET).length < MIN_SECRET_BYTES
+
+/**
+ * One of Cloudflare's request.cf coordinates (a string such as "30.27130"),
+ * in degrees, or null when it is missing or past ±limit.
+ * @param {unknown} value
+ * @param {number} limit
+ */
+function coordinate(value, limit) {
+  const degrees = typeof value === 'string' && value.trim() !== '' ? Number(value) : typeof value === 'number' ? value : NaN
+  return Number.isFinite(degrees) && Math.abs(degrees) <= limit ? degrees : null
+}
+
+/**
+ * GET /geo (root AGENTS.md, Contracts, Region): a geo token for the page's
+ * search, from an allowed origin only.
+ * @param {Request & { cf?: { latitude?: unknown, longitude?: unknown } }} request
+ * @param {{ RELAY_SECRET?: string, ALLOWED_ORIGINS?: string }} env
+ */
+async function geo(request, env) {
+  const origin = request.headers.get('origin')
+  if (!originAllowed(env, origin)) return refuse(403, 'Origin refused')
+  const headers = { 'cache-control': 'no-store', 'access-control-allow-origin': origin, vary: 'Origin' }
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: { ...headers, 'access-control-allow-methods': 'GET', 'access-control-max-age': '600' } })
+  if (request.method !== 'GET') return new Response('Method not allowed', { status: 405, headers: { ...headers, allow: 'GET, OPTIONS' } })
+  if (misconfigured(env)) return refuse(500, 'Relay misconfigured')
+  const lat = coordinate(request.cf?.latitude, 90)
+  const lon = coordinate(request.cf?.longitude, 180)
+  if (lat === null || lon === null) return Response.json({ error: 'no location' }, { status: 503, headers })
+  const token = await signToken(env.RELAY_SECRET, { t: 'geo', lat, lon, exp: Math.floor(Date.now() / 1000) + GEO_TTL })
+  return Response.json({ geo: token }, { headers })
+}
 const retryLater = () => new Response('Game server not ready', { status: 503, headers: { 'retry-after': '1', 'cache-control': 'no-store' } })
 
 /** @type {ExportedHandler<{ RELAY_SECRET?: string, ALLOWED_ORIGINS?: string, UPSTREAM_ORIGIN?: string, GAMEYE_IPV4_DNS_SUFFIX?: string }>} */
 export default {
   async fetch(request, env) {
     const url = new URL(request.url)
+    if (url.pathname === '/geo') return geo(request, env)
     if (url.pathname !== '/match') return refuse(404, 'Not found')
     if (request.method !== 'GET' || request.headers.get('upgrade')?.toLowerCase() !== 'websocket') return refuse(400, 'WebSocket upgrade required')
-    if (!env.RELAY_SECRET || encoder.encode(env.RELAY_SECRET).length < MIN_SECRET_BYTES) return refuse(500, 'Relay misconfigured')
+    if (misconfigured(env)) return refuse(500, 'Relay misconfigured')
     const origin = request.headers.get('origin')
     if (!originAllowed(env, origin)) return refuse(403, 'Origin refused')
     const claims = await verifyRelayToken(env.RELAY_SECRET, url.searchParams.get('token') || '', Math.floor(Date.now() / 1000))

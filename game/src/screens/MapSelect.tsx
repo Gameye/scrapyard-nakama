@@ -182,9 +182,9 @@ export function MapSelect({ pick, loadout, onStart, onBack }: MapSelectProps) {
               title={searching ? 'Cancel search' : 'Classic'}
               line={
                 search.phase === 'connecting'
-                  ? 'Connecting…'
+                  ? `Connecting…${search.server ? ` · Server: ${search.server}` : ''}`
                   : search.phase === 'searching'
-                    ? `${search.away ? 'Reconnecting…' : `Finding players · ${waited(Math.max(0, now - search.since))}`}${search.mode !== mode || search.map !== map ? ` · ${MODES[search.mode as Mode]?.label ?? search.mode} · ${MAPS[search.map as MapId]?.name ?? search.map}` : ''}`
+                    ? `${search.away ? 'Reconnecting…' : `Finding players · ${waited(Math.max(0, now - search.since))}`}${search.mode !== mode || search.map !== map ? ` · ${MODES[search.mode as Mode]?.label ?? search.mode} · ${MAPS[search.map as MapId]?.name ?? search.map}` : ''}${search.server ? ` · Server: ${search.server}` : ''}`
                     : search.phase !== 'idle'
                       ? 'Match found'
                       : lobby

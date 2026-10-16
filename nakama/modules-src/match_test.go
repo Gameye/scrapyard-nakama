@@ -22,8 +22,9 @@ type outcome struct {
 }
 
 type createCall struct {
-	userIds  []string
-	metadata map[string]any
+	userIds   []string
+	latencies []runtime.FleetUserLatencies
+	metadata  map[string]any
 }
 
 // fakeFleet answers each Create with the next outcome (success once they run
@@ -37,9 +38,9 @@ type fakeFleet struct {
 	hold chan struct{}
 }
 
-func (f *fakeFleet) Create(_ context.Context, _ int, userIds []string, _ []runtime.FleetUserLatencies, metadata map[string]any, callback runtime.FmCreateCallbackFn) (map[string]string, error) {
+func (f *fakeFleet) Create(_ context.Context, _ int, userIds []string, latencies []runtime.FleetUserLatencies, metadata map[string]any, callback runtime.FmCreateCallbackFn) (map[string]string, error) {
 	f.mu.Lock()
-	f.creates = append(f.creates, createCall{userIds: append([]string(nil), userIds...), metadata: metadata})
+	f.creates = append(f.creates, createCall{userIds: append([]string(nil), userIds...), latencies: append([]runtime.FleetUserLatencies(nil), latencies...), metadata: metadata})
 	id := fmt.Sprintf("session-%d", len(f.creates))
 	result := outcome{status: runtime.CreateSuccess}
 	if len(f.outcomes) > 0 {
@@ -174,9 +175,16 @@ func gameyeEntry(userId string) runtime.MatchmakerEntry {
 	return fakeEntry{userId: userId, ticket: "ticket-" + userId, properties: map[string]any{"mode": "gameye"}}
 }
 
+// geoEntry is a Gameye ticket carrying a geo token, as the page queues it.
+func geoEntry(userId, geo string) runtime.MatchmakerEntry {
+	return fakeEntry{userId: userId, ticket: "ticket-" + userId, properties: map[string]any{"mode": "gameye", "region": "any", "geo": geo}}
+}
+
 // --- helpers ------------------------------------------------------------------
 
 const testRelayUrl = "wss://relay.test"
+
+var testRegions = []string{"eu-central-1", "us-east-1", "ap-southeast-1"}
 
 // testClock starts at testIssued; tests move it while callbacks read it.
 type testClock struct{ offset atomic.Int64 }
@@ -186,7 +194,7 @@ func (c *testClock) set(d time.Duration) { c.offset.Store(int64(d)) }
 
 func newTestMatches(fleet *fakeFleet, nk *fakeNk) (*gameyeMatches, *fakeLogger) {
 	logger := &fakeLogger{}
-	m := newGameyeMatches(fleet, nk, logger, testRelaySecret, testRelayUrl)
+	m := newGameyeMatches(fleet, nk, logger, testRelaySecret, testRelayUrl, testRegions, "eu-central-1")
 	m.now = func() time.Time { return testIssued }
 	m.backoff = []time.Duration{time.Millisecond, 2 * time.Millisecond}
 	return m, logger
@@ -618,7 +626,7 @@ func TestReadConfig(t *testing.T) {
 		"GAMEYE_API_TOKEN":         "token",
 		"GAMEYE_API_IMAGE":         "scrapyard",
 		"GAMEYE_API_IMAGE_VERSION": "v1",
-		"GAMEYE_API_REGION":        "europe",
+		"GAMEYE_API_REGION":        "eu-central-1",
 		"RELAY_SECRET":             strings.Repeat("r", 32),
 		"RELAY_URL":                "wss://relay.test",
 	}

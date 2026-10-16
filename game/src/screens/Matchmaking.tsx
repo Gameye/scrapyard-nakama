@@ -113,6 +113,7 @@ function Searching({ search, inGame }: { search: Extract<Search, { phase: 'conne
         {modeName(search.mode)} · {mapName(search.map)}
       </span>
       <span className="tabular-nums">{text}</span>
+      {search.server && <span className="text-neutral-400">Server: {search.server}</span>}
       <button onClick={cancelSearch} className="ml-2 text-neutral-400 uppercase hover:text-red-400">
         Cancel
       </button>

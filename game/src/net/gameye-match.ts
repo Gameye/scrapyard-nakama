@@ -1,5 +1,5 @@
 import { Session } from '@heroiclabs/nakama-js'
-import { createGameyeQueue } from './gameye-queue'
+import { createGameyeQueue, fetchGeo, type Clock } from './gameye-queue'
 import type * as Classic from './matchmaking'
 import { freshSession, nakama, onSocket, player } from './session'
 
@@ -23,18 +23,21 @@ function tabStorage() {
   }
 }
 
-const queue = createGameyeQueue({
-  clock: {
-    now: () => performance.now(),
-    unix: () => Math.floor(Date.now() / 1000),
-    after(ms, fn) {
-      const timer = setTimeout(fn, ms)
-      return () => clearTimeout(timer)
-    },
+const clock: Clock = {
+  now: () => performance.now(),
+  unix: () => Math.floor(Date.now() / 1000),
+  after(ms, fn) {
+    const timer = setTimeout(fn, ms)
+    return () => clearTimeout(timer)
   },
+}
+
+const queue = createGameyeQueue({
+  clock,
   onSocket,
   online: () => void player().catch(() => {}), // signs in and holds the socket open (once per page)
   signIn: freshSession,
+  geo: () => fetchGeo(import.meta.env.VITE_GAMEYE_RELAY as string | undefined, clock),
   notifications: async () => (await nakama.listNotifications(await session(), 100)).notifications ?? [],
   forget: async (ids) => nakama.deleteNotifications(await session(), ids),
   storage: tabStorage(),
