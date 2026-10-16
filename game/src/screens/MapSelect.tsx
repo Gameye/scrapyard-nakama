@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import { DIFFICULTIES, type Difficulty } from '../game/ai'
 import { MENU_BACKDROP } from '../game/loading'
 import type { Loadout } from '../game/loadout'
 import { MAPS, mapsFor, type MapId } from '../game/maps'
 import { MODES, type Mode } from '../game/modes'
+import { GAMEYE_BUILD } from '../net/gameye-build'
 import { cancelSearch } from '../net/matchmaking'
+import { AUTO, chooseServer, currentServers, onServers } from '../net/servers'
 import { Robot } from './Avatar'
 import { Custom } from './Custom'
 import { ActionButton, Menu, Pager, Segmented, type MenuItem } from './Menu'
@@ -36,7 +38,8 @@ function step(from: number, by: number) {
   while (NAV_ITEMS[i].disabled)
   return i
 }
-const ROWS = ['arena', 'bots', 'play'] as const // the mode's own choices, top to bottom
+// the mode's own choices, top to bottom; a Gameye build's online play also picks its server
+const ROWS = GAMEYE_BUILD ? (['arena', 'bots', 'server', 'play'] as const) : (['arena', 'bots', 'play'] as const)
 const two = (n: number) => String(n).padStart(2, '0')
 const keycap = 'rounded border border-neutral-500/50 px-1.5 py-0.5'
 // beside the choice the keys are on, as the menus mark theirs
@@ -59,9 +62,12 @@ const globe = (
 // and bots on Normal take the seats nobody has. A search
 // runs on while the player waits here, practises, or goes anywhere else
 // (Matchmaking.tsx shows it there); here Classic says how long it's been and
-// cancels it. Then the mode's terms. From the keyboard, two steps:
+// cancels it. A Gameye build's Classic is quick play on Gameye, and picks its
+// server above it: Auto (the nearest region) or one the plugin has enabled,
+// so friends far apart can meet in one (net/gameye-queue.ts). Then the
+// mode's terms. From the keyboard, two steps:
 // ↑↓ choose the mode and Enter (or →) opens it; then ↑↓ move between the
-// arena, the bots and Practice / Classic, ←→ change the one chosen, Enter
+// arena, the bots, the server and Practice / Classic, ←→ change the one chosen, Enter
 // goes down a row and on the last starts the match; Esc (or ↑ from the
 // arena) goes back to the modes. The mouse works too.
 export function MapSelect({ pick, loadout, onStart, onBack }: MapSelectProps) {
@@ -81,6 +87,12 @@ export function MapSelect({ pick, loadout, onStart, onBack }: MapSelectProps) {
 
   const search = useSearch()
   const searching = search.phase === 'connecting' || search.phase === 'searching'
+  const servers = useSyncExternalStore(onServers, currentServers)
+  const serverOptions = [{ id: AUTO, label: 'Auto (nearest)' }, ...servers.regions.map(({ id, name }) => ({ id, label: name }))]
+  const server = (step: number) => {
+    const at = serverOptions.findIndex((option) => option.id === servers.choice)
+    if (!searching && !lobby) chooseServer(serverOptions[(at + step + serverOptions.length) % serverOptions.length].id)
+  }
   const now = useClock(searching)
   const practice = () => onStart({ mode, map, difficulty, online: false })
   function classic() {
@@ -111,6 +123,7 @@ export function MapSelect({ pick, loadout, onStart, onBack }: MapSelectProps) {
         const step = key === 'ArrowLeft' ? -1 : 1
         if (focus === 'arena') cycle(step)
         if (focus === 'bots') bots(step)
+        if (focus === 'server') server(step)
         if (focus === 'play') setOnline(step > 0)
       }
       if (key === 'Enter') {
@@ -173,6 +186,14 @@ export function MapSelect({ pick, loadout, onStart, onBack }: MapSelectProps) {
             <Segmented label="Practice bot difficulty" options={DIFFICULTY_IDS.map((id) => ({ id, label: DIFFICULTIES[id].label }))} value={difficulty} onChange={setDifficulty} focused={focus === 'bots'} />
           </div>
 
+          {GAMEYE_BUILD && (
+            <div className={`relative mt-4 flex items-center gap-4 transition-opacity ${!online && focus !== 'server' ? 'opacity-50' : ''}`}>
+              {focus === 'server' && mark}
+              <span className="text-[0.65rem] font-bold tracking-[0.3em] text-neutral-300 uppercase">Server</span>
+              <Segmented label="Server" options={serverOptions} value={servers.choice} onChange={chooseServer} focused={focus === 'server'} disabled={searching || lobby} />
+            </div>
+          )}
+
           <div className="relative mt-4 grid grid-cols-2 gap-4">
             {focus === 'play' && mark}
             <ActionButton primary={!online} icon={<Robot />} title="Practice" line={`Play with ${DIFFICULTIES[difficulty].label} Bots${searching ? ' while you wait' : ''}`} onClick={practice} />
@@ -224,7 +245,7 @@ export function MapSelect({ pick, loadout, onStart, onBack }: MapSelectProps) {
             <span className={keycap}>&uarr;&darr;</span>
             <span>Move</span>
             <span className={keycap}>&larr;&rarr;</span>
-            <span>{focus === 'arena' ? 'Arena' : focus === 'bots' ? 'Bots' : 'Practice / Classic'}</span>
+            <span>{focus === 'arena' ? 'Arena' : focus === 'bots' ? 'Bots' : focus === 'server' ? 'Server' : 'Practice / Classic'}</span>
             <span className={keycap}>Enter</span>
             <span>{focus === 'play' ? (online ? (searching ? 'Cancel search' : 'Find match') : 'Start practice') : 'Next'}</span>
             <span className={keycap}>Esc</span>

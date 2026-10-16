@@ -1,6 +1,6 @@
 // Self-check for Gameye mode's matchmaking as the page sees it
 // (gameye-queue.ts, the store behind gameye-match.ts): the ticket and its
-// query, the geo token and the region it queues in, the solo fallback, the match notification followed through the
+// query, the geo token and the region it queues in, the server picker and its pick, the solo fallback, the match notification followed through the
 // relay with retries, every failure and its message, the recovery after a
 // socket reconnect, and the build-time pick between it and Classic
 // (matchmaker.ts). A fake Nakama socket, a fake WebSocket and a clock moved
@@ -8,8 +8,9 @@
 // node src/net/gameye-match.check.ts
 import type { Notification } from '@heroiclabs/nakama-js'
 import { matchmakerPlugin } from '../../matchmaker.ts'
-import { createGameyeQueue, fetchGeo, CONNECT_WINDOW, GEO_WAIT, MESSAGES, REGION_RPC, SEARCH_LIMIT, SOLO_AFTER, SOLO_RPC, ticketProperties, ticketQuery, type QueueSocket } from './gameye-queue.ts'
+import { createGameyeQueue, fetchGeo, CONNECT_WINDOW, GEO_WAIT, MESSAGES, PICK_KEY, REGION_RPC, SEARCH_LIMIT, SOLO_AFTER, SOLO_RPC, ticketProperties, ticketQuery, type QueueSocket } from './gameye-queue.ts'
 import { BUILD, PROTOCOL } from './protocol.ts'
+import { AUTO } from './servers.ts'
 
 let checks = 0
 const check = (ok: boolean, what: string) => {
@@ -134,7 +135,24 @@ const LOADOUT = { vehicle: 'razor', weapon: 'minigun' } as const
 
 const GEO = 'v1.geo-token.sig'
 
-function setup(options: { rpcReply?: () => string; regionReply?: () => string; stored?: Notification[]; geo?: () => Promise<string | null> } = {}) {
+// localStorage, as a map; null: the browser blocks it (every call throws).
+function fakePrefs(entries: Record<string, string> | null = {}) {
+  const map = new Map(Object.entries(entries ?? {}))
+  const blocked = entries === null
+  return {
+    map,
+    getItem(key: string) {
+      if (blocked) throw new Error('SecurityError')
+      return map.get(key) ?? null
+    },
+    setItem(key: string, value: string) {
+      if (blocked) throw new Error('SecurityError')
+      map.set(key, value)
+    },
+  }
+}
+
+function setup(options: { rpcReply?: () => string; regionReply?: () => string; stored?: Notification[]; geo?: () => Promise<string | null>; prefs?: ReturnType<typeof fakePrefs> } = {}) {
   const clock = fakeClock()
   const listeners = new Set<(socket: QueueSocket | null) => void>()
   let live: QueueSocket | null = fakeSocket(options.rpcReply, options.regionReply)
@@ -158,6 +176,7 @@ function setup(options: { rpcReply?: () => string; regionReply?: () => string; s
       store.stored = store.stored.filter((n) => !ids.includes(n.id ?? ''))
     },
     storage: null,
+    prefs: options.prefs ?? null,
   })
   const socket = () => live as ReturnType<typeof fakeSocket>
   // The Nakama socket drops, and (with a socket) comes back.
@@ -220,6 +239,8 @@ const last = () => opened.at(-1)!
   check(pair('dev', 'dev') && pair('odd:build "x"', 'odd:build "x"') && !pair('odd:build "x"', 'odd:build'), 'a build with query characters is quoted, not read as syntax')
   check(pair('b1', 'b1', 'odd region"', 'odd region"') && !pair('b1', 'b1', 'odd region"', 'odd'), 'a region too')
   check(!('geo' in ticketProperties('b1', 'us-east-1', null)), 'no geo property without a token')
+  check(ticketProperties('b1', 'us-east-1', null, true).pick === '1' && !('pick' in ticketProperties('b1', 'us-east-1', null)), 'pick=1 only on a picked region')
+  check(holds(ticketQuery('b1', 'us-east-1'), ticketProperties('b1', 'us-east-1', null, true)) && holds(ticketQuery('b1', 'us-east-1'), ticketProperties('b1', 'us-east-1', 'v1.a')), 'a pick and a nearest-region ticket for one region match')
 }
 
 // --- a live gameye_match: through the relay, seated with the seat token -------------------------------
@@ -335,6 +356,138 @@ const last = () => opened.at(-1)!
   check(queue.currentSearch().phase === 'connecting' && last().url.endsWith('token=resumed-relay'), 'the match it was handed is followed')
   queue.cancelSearch()
   await flush()
+}
+
+// --- the server picker: Auto, or one enabled region -----------------------------------------------------
+
+const ENABLED = '"regions":["eu-central-1","us-east-1","ap-southeast-1"]'
+const ids = (queue: ReturnType<typeof createGameyeQueue>) => queue.currentServers().regions.map((r) => r.id).join()
+const answering = (region: string) => () => `{"region":"${region}",${ENABLED}}`
+
+// Auto: gameye_region asked with the geo token alone, no pick on the ticket or the solo call.
+{
+  const { clock, queue, socket } = setup({ prefs: fakePrefs(), regionReply: answering('ap-southeast-1') })
+  void queue.findMatch('ffa', 'scrapyard', LOADOUT)
+  await flush()
+  const add = socket().calls.add
+  check(socket().calls.region[0] === JSON.stringify({ geo: GEO }), `Auto asks gameye_region with the geo token alone (${socket().calls.region[0]})`)
+  check(add.length === 1 && !('pick' in (add[0].strings ?? {})), 'and its ticket has no pick')
+  check(queue.currentServers().choice === AUTO && ids(queue) === 'eu-central-1,us-east-1,ap-southeast-1', 'the search’s answer fills the picker, Auto chosen')
+  await clock.advance(SOLO_AFTER)
+  check(socket().calls.payloads[0] === JSON.stringify({ geo: GEO }), `nor the solo call (${socket().calls.payloads[0]})`)
+  queue.cancelSearch()
+  await flush()
+}
+
+// A picked region: asked for, on the ticket with pick=1 under the same region property and query, on the solo calls, named on the status line.
+{
+  const prefs = fakePrefs({ [PICK_KEY]: 'eu-central-1' })
+  const clock0 = fakeClock()
+  const { clock, queue, socket, swap } = setup({ prefs, regionReply: answering('eu-central-1') })
+  void queue.findMatch('ffa', 'scrapyard', LOADOUT)
+  await flush()
+  const add = socket().calls.add
+  check(socket().calls.region[0] === JSON.stringify({ geo: GEO, region: 'eu-central-1' }), `the pick goes to gameye_region beside the geo token (${socket().calls.region[0]})`)
+  check(add[0].strings?.region === 'eu-central-1' && add[0].strings?.pick === '1' && add[0].strings?.geo === GEO, `the ticket: that region, pick=1 and the geo token (${JSON.stringify(add[0].strings)})`)
+  check(add[0].query === ticketQuery(BUILD, 'eu-central-1'), 'and the query a nearest-region ticket for Frankfurt has: they meet')
+  check(queue.currentSearch().phase === 'searching' && (queue.currentSearch() as { server?: string }).server === 'Frankfurt', 'the status line names the server')
+  await clock.advance(SOLO_AFTER)
+  check(socket().calls.payloads[0] === JSON.stringify({ geo: GEO, region: 'eu-central-1' }), `the fresh solo call names the picked region (${socket().calls.payloads[0]})`)
+  swap(null)
+  await flush()
+  swap(fakeSocket(() => JSON.stringify({ status: 'matched', match: match(clock0.unix(), { region: 'eu-central-1' }) }), answering('eu-central-1')))
+  await flush()
+  check(socket().calls.payloads[0] === JSON.stringify({ resume: true, geo: GEO, region: 'eu-central-1' }), `and so does the resume (${socket().calls.payloads[0]})`)
+  check(queue.currentSearch().phase === 'connecting' && (queue.currentSearch() as { server?: string }).server === 'Frankfurt', 'the match’s server is named while connecting')
+  queue.cancelSearch()
+  await flush()
+}
+
+// A pick without a geo token goes alone.
+{
+  const { queue, socket } = setup({ geo: async () => null, prefs: fakePrefs({ [PICK_KEY]: 'us-east-1' }), regionReply: answering('us-east-1') })
+  void queue.findMatch('ffa', 'scrapyard', LOADOUT)
+  await flush()
+  check(socket().calls.region[0] === JSON.stringify({ region: 'us-east-1' }), `without a geo token, gameye_region gets the pick alone (${socket().calls.region[0]})`)
+  check(socket().calls.add[0].strings?.pick === '1' && !('geo' in (socket().calls.add[0].strings ?? {})), 'its ticket has pick=1 and no geo')
+  queue.cancelSearch()
+  await flush()
+}
+
+// A remembered region no longer enabled reads as Auto: the plugin answers the nearest, and the ticket isn't a pick.
+{
+  const { clock, queue, socket } = setup({ prefs: fakePrefs({ [PICK_KEY]: 'sa-east-1' }), regionReply: answering('ap-southeast-1') })
+  void queue.findMatch('ffa', 'scrapyard', LOADOUT)
+  await flush()
+  check(socket().calls.add[0].strings?.region === 'ap-southeast-1' && !('pick' in (socket().calls.add[0].strings ?? {})), 'a region no longer enabled: the nearest, no pick')
+  check(queue.currentServers().choice === AUTO, 'and the picker shows Auto')
+  await clock.advance(SOLO_AFTER)
+  check(socket().calls.payloads[0] === JSON.stringify({ geo: GEO }), `the solo call names no region (${socket().calls.payloads[0]})`)
+  queue.cancelSearch()
+  await flush()
+}
+
+// A plugin that answers no list (before the picker) never gets a pick=1 ticket.
+{
+  const { queue, socket } = setup({ prefs: fakePrefs({ [PICK_KEY]: 'eu-central-1' }), regionReply: () => '{"region":"eu-central-1"}' })
+  void queue.findMatch('ffa', 'scrapyard', LOADOUT)
+  await flush()
+  check(!('pick' in (socket().calls.add[0].strings ?? {})) && queue.currentServers().regions.length === 0, 'no regions listed: no pick, and the picker offers Auto only')
+  queue.cancelSearch()
+  await flush()
+}
+
+// The picker on screen: each socket that comes up asks the enabled regions; a choice is remembered for the browser.
+{
+  const prefs = fakePrefs()
+  const { queue, socket, swap } = setup({ prefs, regionReply: answering('eu-central-1') })
+  check(queue.currentServers().regions.length === 0 && queue.currentServers().choice === AUTO, 'before anything is asked, Auto only')
+  let heard = 0
+  const stop = queue.onServers(() => heard++)
+  await flush()
+  check(socket().calls.region.length === 1 && socket().calls.region[0] === undefined, 'the picker asks gameye_region with no payload once the socket is up')
+  check(heard === 1 && ids(queue) === 'eu-central-1,us-east-1,ap-southeast-1', 'and offers what it lists, in its order')
+  check(queue.currentServers().regions.map((r) => r.name).join() === 'Frankfurt,Virginia,Singapore', 'by name')
+  queue.chooseServer('us-east-1')
+  check(queue.currentServers().choice === 'us-east-1' && prefs.map.get(PICK_KEY) === 'us-east-1' && heard === 2, 'a choice is shown and remembered in scrapyard.region')
+  queue.chooseServer('sa-east-1')
+  check(queue.currentServers().choice === 'us-east-1' && prefs.map.get(PICK_KEY) === 'us-east-1', 'a region not offered can’t be chosen')
+  const next = fakeSocket(undefined, () => `{"region":"eu-central-1","regions":["eu-central-1"]}`)
+  swap(next)
+  await flush()
+  check(next.calls.region.length === 1 && ids(queue) === 'eu-central-1' && queue.currentServers().choice === AUTO, 'a new socket asks again; a choice no longer enabled shows as Auto')
+  check(prefs.map.get(PICK_KEY) === 'us-east-1', 'but stays remembered, in case it comes back')
+  queue.chooseServer(AUTO)
+  check(prefs.map.get(PICK_KEY) === AUTO, 'Auto is remembered too')
+  stop()
+  const after = fakeSocket()
+  swap(after)
+  await flush()
+  check(after.calls.region.length === 0, 'with the picker gone, nothing more is asked')
+}
+
+// A picker whose gameye_region fails keeps Auto only; a browser that blocks storage keeps the choice for the page.
+{
+  const { queue, socket } = setup({ prefs: fakePrefs(null) })
+  socket().rpc = async () => Promise.reject(new Error('socket closed'))
+  const stop = queue.onServers(() => {})
+  await flush()
+  check(queue.currentServers().regions.length === 0 && queue.currentServers().choice === AUTO, 'a failed gameye_region: Auto only')
+  stop()
+}
+{
+  const { queue, socket } = setup({ prefs: fakePrefs(null), regionReply: answering('ap-southeast-1') })
+  const stop = queue.onServers(() => {})
+  await flush()
+  queue.chooseServer('ap-southeast-1')
+  check(queue.currentServers().choice === 'ap-southeast-1', 'blocked storage: the choice still holds for the page')
+  socket().calls.region.length = 0
+  void queue.findMatch('ffa', 'scrapyard', LOADOUT)
+  await flush()
+  check(socket().calls.region[0] === JSON.stringify({ geo: GEO, region: 'ap-southeast-1' }) && socket().calls.add[0].strings?.pick === '1', 'and its search picks it')
+  queue.cancelSearch()
+  await flush()
+  stop()
 }
 
 // --- the geo step never holds the search up ---------------------------------------------------------------
@@ -604,6 +757,13 @@ check(MESSAGES.unavailable !== MESSAGES.unreachable, 'the two failures read diff
   check((await resolve('gameye', './net/matchmaking', '/game/src/App.tsx'))?.endsWith('/src/net/gameye-match.ts') === true, 'with VITE_MATCHMAKER=gameye, the screens get gameye-match.ts')
   check((await resolve('gameye', './custom', '/game/src/App.tsx')) === null, 'and nothing else moves')
   check((await resolve('gameye', './matchmaking', '/game/src/net/gameye-match.ts')) === null, 'gameye-match.ts itself still reaches upstream’s types')
+  const at = async (choice: string | undefined, source: string, importer: string) => {
+    const hook = matchmakerPlugin(choice).resolveId as unknown as (this: object, s: string, i: string, o: object) => Promise<string | null>
+    return hook.call({ resolve: async () => ({ id: '/game/src/net/servers.ts' }) }, source, importer, {})
+  }
+  check((await at(undefined, '../net/servers', '/game/src/screens/MapSelect.tsx')) === null, 'without it, the screens’ servers.ts is Classic’s: no picker')
+  check((await at('gameye', '../net/servers', '/game/src/screens/MapSelect.tsx'))?.endsWith('/src/net/gameye-match.ts') === true, 'with it, gameye-match.ts’s picker')
+  check((await at('gameye', './servers', '/game/src/net/gameye-queue.ts')) === null, 'and the gameye files still reach servers.ts')
 }
 
 for (const ws of opened) if (ws.readyState === 0) ws.refuse() // nothing left waiting on a real timer
