@@ -196,6 +196,25 @@ func TestTokensMatchThePinnedVectors(t *testing.T) {
 	}
 }
 
+// The relay's geo token (edge/worker.js signToken, pinned in
+// test/relay.test.mjs as GO_GEO) verifies here, to its point.
+func TestGeoTokenMatchesThePinnedVector(t *testing.T) {
+	const (
+		secret = "seat-secret-for-the-checks-0123456789abcdef"
+		goGeo  = "v1.eyJ0IjoiZ2VvIiwibGF0IjozMi43NSwibG9uIjotOTcuMzMsImV4cCI6MTkwMDAwMDYwMH0.GujOW_6p0ldGdXkCirA53ovjvT3wMtvc6Bs9SBRLW14"
+	)
+	at, err := verifyGeoToken([]byte(secret), goGeo, time.Unix(1_900_000_600, 0))
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if at != (point{32.75, -97.33}) {
+		t.Errorf("point = %+v, want Fort Worth's", at)
+	}
+	if _, err := verifyGeoToken([]byte(secret), goGeo, time.Unix(1_900_000_601, 0)); err == nil {
+		t.Error("verified after its exp")
+	}
+}
+
 // geoAt signs a geo token for a point as the relay does (edge/worker.js), good
 // for 600 s from testIssued.
 func geoAt(at point) string {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHmac } from 'node:crypto'
 import { test } from 'node:test'
-import relay, { originAllowed, upstreamTarget, verifyRelayToken } from '../edge/worker.js'
+import relay, { originAllowed, readToken, signToken, upstreamTarget, verifyRelayToken } from '../edge/worker.js'
 
 const SECRET = 'relay-secret-for-tests-0123456789abcdef'
 const SITE = 'https://scrapyard.gameye.com'
@@ -45,6 +45,8 @@ async function run(request, runEnv = env, upstream = async () => switched) {
 const GO_SECRET = 'seat-secret-for-the-checks-0123456789abcdef'
 const GO_RELAY =
   'v1.eyJ0IjoicmVsYXkiLCJzaWQiOiJzZXNzLTdmM2EiLCJob3N0IjoiMS4yLjMuNCIsInBvcnQiOjczNjAsImV4cCI6MTkwMDAwMDEyMH0.FE8NCsPi_n-nq6cOIw871t59b6hsKBSeHc8UfMQxKFY'
+// The relay's geo token for Fort Worth (32.75, -97.33), exp 1900000600, with the same secret; tokens_test.go verifies it.
+const GO_GEO = 'v1.eyJ0IjoiZ2VvIiwibGF0IjozMi43NSwibG9uIjotOTcuMzMsImV4cCI6MTkwMDAwMDYwMH0.GujOW_6p0ldGdXkCirA53ovjvT3wMtvc6Bs9SBRLW14'
 
 test('the Go reference relay token verifies here, to its claims, until its exp', async () => {
   const relayed = await verifyRelayToken(GO_SECRET, GO_RELAY, 1_900_000_120)
@@ -208,4 +210,94 @@ test('upstreamTarget refuses a bad suffix and never builds a non-IPv4 target', (
   assert.equal(upstreamTarget({}, { host: '51.195.60.60', port: 1 }), 'http://51.195.60.60.sslip.io:1/match')
   assert.equal(upstreamTarget({ GAMEYE_IPV4_DNS_SUFFIX: 'evil.example/x?' }, { host: '51.195.60.60', port: 1 }), null)
   assert.equal(upstreamTarget({}, { host: 'game.example', port: 1 }), null)
+})
+
+// --- GET /geo -----------------------------------------------------------------------------------------
+
+/** A /geo request as Cloudflare hands it to the worker: request.cf holds its coordinates as strings. */
+function geoRequest({ origin = SITE, method = 'GET', cf = { latitude: '1.35210', longitude: '103.81980' } } = {}) {
+  const headers = new Headers()
+  if (origin) headers.set('Origin', origin)
+  const request = new Request('https://scrapyard-relay.gameye.com/geo', { method, headers })
+  if (cf) Object.defineProperty(request, 'cf', { value: cf })
+  return request
+}
+
+test('/geo from an allowed origin answers a geo token of the player’s point, good for 600 s', async () => {
+  const before = now()
+  const { response, seen } = await run(geoRequest())
+  assert.equal(response.status, 200)
+  assert.equal(seen.length, 0, 'nothing is fetched')
+  assert.equal(response.headers.get('cache-control'), 'no-store')
+  assert.equal(response.headers.get('access-control-allow-origin'), SITE)
+  assert.equal(response.headers.get('vary'), 'Origin')
+  assert.match(response.headers.get('content-type'), /^application\/json/)
+  const { geo } = await response.json()
+  const claims = await readToken(SECRET, geo)
+  assert.equal(claims?.t, 'geo')
+  assert.equal(claims.lat, 1.3521)
+  assert.equal(claims.lon, 103.8198)
+  assert.ok(claims.exp >= before + 600 && claims.exp <= now() + 600, `exp ${claims.exp} is issue + 600 s`)
+  assert.deepEqual(Object.keys(claims), ['t', 'lat', 'lon', 'exp'])
+  assert.equal(await readToken(`${SECRET}x`, geo), null, 'signed with RELAY_SECRET')
+  assert.equal(await verifyRelayToken(SECRET, geo, now()), null, 'never good as a relay token')
+})
+
+test('/geo signs as the Go reference does: its pinned vector, byte for byte', async () => {
+  // Pinned in nakama/modules-src/tokens_test.go (TestGeoTokenMatchesThePinnedVector), which verifies it there.
+  assert.equal(
+    await signToken(GO_SECRET, { t: 'geo', lat: 32.75, lon: -97.33, exp: 1_900_000_600 }),
+    sign({ t: 'geo', lat: 32.75, lon: -97.33, exp: 1_900_000_600 }, GO_SECRET),
+  )
+  assert.equal(await signToken(GO_SECRET, { t: 'geo', lat: 32.75, lon: -97.33, exp: 1_900_000_600 }), GO_GEO)
+})
+
+test('/geo from a disallowed origin is refused, with no CORS header', async () => {
+  for (const origin of ['https://evil.example', 'http://scrapyard.gameye.com', 'null', null]) {
+    for (const method of ['GET', 'OPTIONS']) {
+      const { response } = await run(geoRequest({ origin, method }))
+      assert.equal(response.status, 403, `${origin} ${method}`)
+      assert.equal(response.headers.get('access-control-allow-origin'), null)
+      assert.ok(!(await response.text()).includes('v1.'), 'no token')
+    }
+  }
+})
+
+test('/geo without usable coordinates answers 503 no location', async () => {
+  for (const cf of [
+    null,
+    {},
+    { latitude: '1.35' },
+    { longitude: '103.8' },
+    { latitude: '', longitude: '' },
+    { latitude: ' ', longitude: '103.8' },
+    { latitude: 'abc', longitude: '103.8' },
+    { latitude: '91', longitude: '0' },
+    { latitude: '0', longitude: '-180.5' },
+    { latitude: 'Infinity', longitude: '0' },
+  ]) {
+    const { response } = await run(geoRequest({ cf }))
+    assert.equal(response.status, 503, JSON.stringify(cf))
+    assert.deepEqual(await response.json(), { error: 'no location' })
+    assert.equal(response.headers.get('cache-control'), 'no-store')
+    assert.equal(response.headers.get('access-control-allow-origin'), SITE, 'the page can read why')
+  }
+  const { response } = await run(geoRequest({ cf: { latitude: '-90', longitude: '180' } }))
+  assert.equal(response.status, 200, 'the poles and the antimeridian are places')
+})
+
+test('/geo answers the CORS preflight for an allowed origin', async () => {
+  const { response } = await run(geoRequest({ method: 'OPTIONS' }))
+  assert.equal(response.status, 204)
+  assert.equal(response.headers.get('access-control-allow-origin'), SITE)
+  assert.equal(response.headers.get('access-control-allow-methods'), 'GET')
+  assert.equal(response.headers.get('vary'), 'Origin')
+  assert.equal(await response.text(), '')
+})
+
+test('/geo takes GET only, and needs a usable RELAY_SECRET', async () => {
+  assert.equal((await run(geoRequest({ method: 'POST' }))).response.status, 405)
+  for (const RELAY_SECRET of [undefined, 'short']) {
+    assert.equal((await run(geoRequest(), { ...env, RELAY_SECRET })).response.status, 500)
+  }
 })

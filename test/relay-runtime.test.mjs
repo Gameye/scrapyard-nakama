@@ -44,7 +44,7 @@ async function startRelay(t) {
     { name: 'loopback-dns', modules: true, script: LOOPBACK_DNS, compatibilityDate: '2026-09-26' },
   ] }))
   t.after(() => mf.dispose())
-  return (await mf.ready).origin
+  return { origin: (await mf.ready).origin, mf }
 }
 
 test('workerd relays a signed upgrade to the game server and passes messages through', { timeout: 30000 }, async (t) => {
@@ -58,7 +58,7 @@ test('workerd relays a signed upgrade to the game server and passes messages thr
   backend.listen(0, '127.0.0.1'); await once(backend, 'listening')
   t.after(() => { for (const ws of sockets.clients) ws.terminate(); sockets.close(); backend.close() })
 
-  const origin = await startRelay(t)
+  const { origin } = await startRelay(t)
   const token = sign({ t: 'relay', sid: 's1', host: '127.0.0.1', port: backend.address().port, exp: Math.floor(Date.now() / 1000) + 120 })
   const ws = new WebSocket(`${origin.replace('http:', 'ws:')}/match?token=${token}`, { origin: SITE, headers: { 'CF-Connecting-IP': '203.0.113.7' } })
   t.after(() => ws.terminate())
@@ -77,11 +77,31 @@ test('workerd answers 503 with Retry-After while nothing listens on the port, an
   const port = closed.address().port
   closed.close(); await once(closed, 'close')
 
-  const origin = await startRelay(t)
+  const { origin } = await startRelay(t)
   const token = sign({ t: 'relay', sid: 's1', host: '127.0.0.1', port, exp: Math.floor(Date.now() / 1000) + 120 })
   const refused = await rawUpgrade(`${origin}/match?token=${token}`, SITE)
   assert.equal(refused.status, 503)
   assert.equal(refused.headers['retry-after'], '1')
   const foreign = await rawUpgrade(`${origin}/match?token=${token}`, 'https://evil.example')
   assert.equal(foreign.status, 403)
+})
+
+test('workerd signs request.cf’s coordinates on /geo, for an allowed origin only', { timeout: 30000 }, async (t) => {
+  const { mf } = await startRelay(t)
+  const located = await mf.dispatchFetch('http://relay.test/geo', { headers: { Origin: SITE }, cf: { latitude: '-33.86880', longitude: '151.20930' } })
+  assert.equal(located.status, 200)
+  assert.equal(located.headers.get('access-control-allow-origin'), SITE)
+  const [, payload, signature] = (await located.json()).geo.split('.')
+  assert.equal(signature, createHmac('sha256', SECRET).update(`v1.${payload}`).digest('base64url'), 'signed with RELAY_SECRET')
+  const claims = JSON.parse(Buffer.from(payload, 'base64url').toString())
+  assert.equal(claims.t, 'geo')
+  assert.equal(claims.lat, -33.8688)
+  assert.equal(claims.lon, 151.2093)
+
+  const nowhere = await mf.dispatchFetch('http://relay.test/geo', { headers: { Origin: SITE }, cf: { latitude: '', longitude: '' } })
+  assert.equal(nowhere.status, 503)
+  assert.deepEqual(await nowhere.json(), { error: 'no location' })
+  const foreign = await mf.dispatchFetch('http://relay.test/geo', { headers: { Origin: 'https://evil.example' }, cf: { latitude: '1', longitude: '1' } })
+  assert.equal(foreign.status, 403)
+  await foreign.arrayBuffer()
 })
