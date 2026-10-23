@@ -9,8 +9,9 @@ This is [Gameye](https://gameye.com)'s fork of Scrapyard by A. A. Sumitro
 matched by Nakama's matchmaker, with each match on a dedicated game server in its own Gameye
 session, started through the [Gameye Fleet Manager for
 Nakama](https://github.com/Gameye/nakama-fleetmanager) (`github.com/Gameye/nakama-fleetmanager`
-v0.2.0). Custom lobbies, accounts and replays
-work as upstream's do.
+v0.2.0). Accounts work as upstream's do. The public Gameye demo, https://scrapyard.gameye.com,
+is quick play only: custom lobbies, match records and replays need upstream's own game server
+(`deploy/`), which the demo doesn't run.
 
 [`GAMEYE.md`](GAMEYE.md) walks through it: what happens when you press Play, the Nakama plugin
 code, the tokens, the Gameye settings, and `scripts/gameye-up.sh`, which runs it locally on
