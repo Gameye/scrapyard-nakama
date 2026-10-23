@@ -28,7 +28,9 @@ interface MapSelectProps {
 
 const MODE_IDS = Object.keys(MODES) as Mode[]
 const DIFFICULTY_IDS = Object.keys(DIFFICULTIES) as Difficulty[]
-const NAV_ITEMS: MenuItem[] = [...MODE_IDS.map((mode) => ({ label: MODES[mode].label })), { label: 'Custom' }, { label: 'Back' }]
+// a Gameye build's game servers run quick play only (server/gameye-server.ts): no custom lobbies
+const CUSTOM_ITEM: MenuItem = GAMEYE_BUILD ? { label: 'Custom', disabled: true, hint: 'Not on the Gameye demo' } : { label: 'Custom' }
+const NAV_ITEMS: MenuItem[] = [...MODE_IDS.map((mode) => ({ label: MODES[mode].label })), CUSTOM_ITEM, { label: 'Back' }]
 const CUSTOM = MODE_IDS.length
 const BACK = NAV_ITEMS.length - 1
 // the entry ↑ (-1) or ↓ (1) lands on, round the ends, over the disabled ones
