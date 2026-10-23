@@ -324,6 +324,17 @@ const last = () => opened.at(-1)!
   await flush()
 }
 
+// The solo RPC answering busy (the plugin's cooldown): the search ends with the busy message.
+{
+  const { clock, queue } = setup({ rpcReply: () => '{"status":"busy"}' })
+  void queue.findMatch('ffa', 'scrapyard', LOADOUT)
+  await flush()
+  await clock.advance(SOLO_AFTER)
+  await flush()
+  const now = queue.currentSearch()
+  check(now.phase === 'idle' && now.note === MESSAGES.busy, `a busy solo reply ends the search with the busy message (${JSON.stringify(now)})`)
+}
+
 // The solo RPC answering with the caller's existing match: straight to it.
 {
   const clock0 = fakeClock()
@@ -658,6 +669,7 @@ for (const [reason, message] of [
   ['no_capacity', MESSAGES.unreachable],
   ['unavailable', MESSAGES.unreachable],
   ['error', MESSAGES.unreachable],
+  ['busy', MESSAGES.busy],
   ['something-new', MESSAGES.unreachable],
 ] as const) {
   const { clock, queue, socket } = setup()

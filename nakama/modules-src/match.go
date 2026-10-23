@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -58,7 +59,17 @@ const (
 	reasonMisconfigured = "misconfigured"
 	reasonUnavailable   = "unavailable"
 	reasonError         = "error"
+	// reasonBusy: the plugin's own limits refused the start (soloCooldown, or
+	// maxSessions live or starting); nothing was asked of Gameye.
+	reasonBusy = "busy"
 )
+
+// soloCooldown is the least time between two solo sessions of one player: a
+// page asking again sooner, scripted or not, is told busy.
+const soloCooldown = 30 * time.Second
+
+// listTimeout bounds the count of live sessions taken before each start.
+const listTimeout = 5 * time.Second
 
 // notifyTimeout bounds each notification sent after the hook has returned.
 const notifyTimeout = 10 * time.Second
@@ -67,6 +78,7 @@ const notifyTimeout = 10 * time.Second
 type fleet interface {
 	Create(ctx context.Context, maxPlayers int, userIds []string, latencies []runtime.FleetUserLatencies, metadata map[string]any, callback runtime.FmCreateCallbackFn) (map[string]string, error)
 	Delete(ctx context.Context, id string) error
+	List(ctx context.Context, query string, limit int, previousCursor string) ([]*runtime.InstanceInfo, string, error)
 }
 
 // gameyeMatches turns a match (the matchmaker's, or one player's) into a
@@ -84,6 +96,11 @@ type gameyeMatches struct {
 	// backoff holds the wait before each retry of a start that found no
 	// capacity or a Gameye error: two retries.
 	backoff []time.Duration
+	// maxSessions caps the sessions live at Gameye plus those starting; a
+	// start past it is refused as busy. 0: no cap.
+	maxSessions int
+	// cooldown is soloCooldown; tests shorten it.
+	cooldown time.Duration
 
 	mu sync.Mutex
 	// starting holds the players whose session is on its way; assigned, the
@@ -91,6 +108,16 @@ type gameyeMatches struct {
 	// hands it back, or a fresh solo call starts another.
 	starting map[string]bool
 	assigned map[string]assignment
+	// inFlight counts the starts not yet announced or failed.
+	inFlight int
+	// solo holds each player's last solo session and when it was announced:
+	// a new search stops it, and a solo call within cooldown of it is busy.
+	solo map[string]soloSession
+}
+
+type soloSession struct {
+	id string
+	at time.Time
 }
 
 type assignment struct {
@@ -98,7 +125,7 @@ type assignment struct {
 	exp     time.Time
 }
 
-func newGameyeMatches(fm fleet, nk runtime.NakamaModule, logger runtime.Logger, relaySecret []byte, relayUrl string, regions []string, fallback string) *gameyeMatches {
+func newGameyeMatches(fm fleet, nk runtime.NakamaModule, logger runtime.Logger, relaySecret []byte, relayUrl string, regions []string, fallback string, maxSessions int) *gameyeMatches {
 	return &gameyeMatches{
 		fm:          fm,
 		nk:          nk,
@@ -109,8 +136,11 @@ func newGameyeMatches(fm fleet, nk runtime.NakamaModule, logger runtime.Logger, 
 		fallback:    fallback,
 		now:         time.Now,
 		backoff:     []time.Duration{time.Second, 2 * time.Second},
+		maxSessions: maxSessions,
+		cooldown:    soloCooldown,
 		starting:    make(map[string]bool),
 		assigned:    make(map[string]assignment),
+		solo:        make(map[string]soloSession),
 	}
 }
 
@@ -150,15 +180,21 @@ func (m *gameyeMatches) matched(ctx context.Context, _ runtime.Logger, _ *sql.DB
 	// match has queued again, so that match is no longer theirs to resume.
 	m.mu.Lock()
 	players := userIds[:0]
+	var stale []string
 	for _, userId := range userIds {
 		if m.starting[userId] {
 			continue
 		}
 		delete(m.assigned, userId)
+		if s, ok := m.solo[userId]; ok {
+			stale = append(stale, s.id)
+			delete(m.solo, userId)
+		}
 		m.starting[userId] = true
 		players = append(players, userId)
 	}
 	m.mu.Unlock()
+	m.stop(stale)
 	if len(players) == 0 {
 		return "", nil
 	}
@@ -169,7 +205,7 @@ func (m *gameyeMatches) matched(ctx context.Context, _ runtime.Logger, _ *sql.DB
 	}
 	forced, _ := pickedRegion(regions, chosen, m.regions)
 	// The first ticket traces the Gameye session back to the matchmaker.
-	m.start(ctx, players, latencies, entries[0].GetTicket(), forced)
+	m.start(ctx, players, latencies, entries[0].GetTicket(), forced, false)
 	return "", nil
 }
 
@@ -214,11 +250,21 @@ func (m *gameyeMatches) soloMatch(ctx context.Context, _ runtime.Logger, _ *sql.
 		return string(reply), nil
 	}
 	delete(m.assigned, userId)
+	var stale []string
+	if s, ok := m.solo[userId]; ok {
+		if m.now().Sub(s.at) < m.cooldown {
+			m.mu.Unlock()
+			return `{"status":"busy"}`, nil
+		}
+		stale = append(stale, s.id)
+		delete(m.solo, userId)
+	}
 	m.starting[userId] = true
 	m.mu.Unlock()
+	m.stop(stale)
 
 	forced, _ := pickedRegion([]string{call.Region}, call.Region != "", m.regions)
-	m.start(ctx, []string{userId}, m.estimates(userId, call.Geo), "solo-"+userId, forced)
+	m.start(ctx, []string{userId}, m.estimates(userId, call.Geo), "solo-"+userId, forced, true)
 	return `{"status":"starting"}`, nil
 }
 
@@ -270,18 +316,77 @@ func (m *gameyeMatches) holds(userId string) bool {
 // start asks the fleet manager for a session, then retries or announces from
 // its callback. The players must already be marked starting. A forced
 // region (pickedRegion's) is where it starts; "" leaves it to the latencies.
-func (m *gameyeMatches) start(ctx context.Context, userIds []string, latencies []runtime.FleetUserLatencies, externalId, forced string) {
+func (m *gameyeMatches) start(ctx context.Context, userIds []string, latencies []runtime.FleetUserLatencies, externalId, forced string, solo bool) {
 	r := request{
 		userIds:    userIds,
 		latencies:  latencies,
 		region:     forced,
 		forced:     forced != "",
 		externalId: externalId,
+		solo:       solo,
 	}
 	if !r.forced {
 		r.region = expected(userIds, latencies, m.fallback)
 	}
+	if !m.admit(ctx) {
+		m.fail(userIds, reasonBusy, fmt.Errorf("%d sessions live or starting", m.maxSessions))
+		return
+	}
 	m.attempt(ctx, r, 0)
+}
+
+// admit counts the sessions live at Gameye for this image and tag, plus the
+// starts in flight, against maxSessions, and takes a slot when there is
+// one. A failed count admits: Create would meet the same outage.
+func (m *gameyeMatches) admit(ctx context.Context) bool {
+	if m.maxSessions <= 0 {
+		m.mu.Lock()
+		m.inFlight++
+		m.mu.Unlock()
+		return true
+	}
+	live := 0
+	listCtx, cancel := context.WithTimeout(ctx, listTimeout)
+	defer cancel()
+	instances, _, err := m.fm.List(listCtx, "", 0, "")
+	if err != nil {
+		m.logger.Warn("counting live gameye sessions: %v", err)
+	}
+	for _, instance := range instances {
+		if liveStatus(instance.Status) {
+			live++
+		}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if live+m.inFlight >= m.maxSessions {
+		return false
+	}
+	m.inFlight++
+	return true
+}
+
+// liveStatus: a Gameye session still holding a container.
+func liveStatus(status string) bool {
+	switch status {
+	case "created", "restarting", "running", "draining", "shuttingdown":
+		return true
+	}
+	return false
+}
+
+// stop stops sessions a player has left for a new search, off the caller's
+// path.
+func (m *gameyeMatches) stop(ids []string) {
+	for _, id := range ids {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
+			defer cancel()
+			if err := m.fm.Delete(ctx, id); err != nil {
+				m.logger.Warn("stopping gameye session %v its player left: %v", id, err)
+			}
+		}()
+	}
 }
 
 // request is one match's session start, the same on each retry.
@@ -291,6 +396,7 @@ type request struct {
 	region     string // where the fleet manager starts it: forced, or by its own rule
 	forced     bool   // a player picked region, passed as MetadataKeyRegion
 	externalId string
+	solo       bool // one player's, from gameye_solo_match
 }
 
 func (m *gameyeMatches) attempt(ctx context.Context, r request, retries int) {
@@ -315,7 +421,7 @@ func (m *gameyeMatches) attempt(ctx context.Context, r request, retries int) {
 	// cancelled ctx: nothing in it uses ctx.
 	callback := func(status runtime.FmCreateStatus, instance *runtime.InstanceInfo, _ []*runtime.SessionInfo, _ map[string]any, err error) {
 		if status == runtime.CreateSuccess {
-			m.announce(userIds, instance, []byte(secret), r.region)
+			m.announce(userIds, instance, []byte(secret), r.region, r.solo)
 			return
 		}
 		if status == runtime.CreateError && retryable(err) && retries < len(m.backoff) {
@@ -338,7 +444,7 @@ func (m *gameyeMatches) attempt(ctx context.Context, r request, retries int) {
 
 // announce signs each player's tokens and sends them where to connect. A
 // session its players never hear of is stopped.
-func (m *gameyeMatches) announce(userIds []string, instance *runtime.InstanceInfo, seatSecret []byte, region string) {
+func (m *gameyeMatches) announce(userIds []string, instance *runtime.InstanceInfo, seatSecret []byte, region string, solo bool) {
 	if instance == nil {
 		m.fail(userIds, reasonError, errors.New("the fleet manager reported no session"))
 		return
@@ -390,7 +496,11 @@ func (m *gameyeMatches) announce(userIds []string, instance *runtime.InstanceInf
 		content[fleetmanager.NotificationKeySessionId] = instance.Id
 		m.assigned[userId] = assignment{content: content, exp: exp}
 		delete(m.starting, userId)
+		if solo {
+			m.solo[userId] = soloSession{id: instance.Id, at: issued}
+		}
 	}
+	m.inFlight--
 	m.logger.Info("gameye session %v is ready for players %v", instance.Id, userIds)
 }
 
@@ -410,6 +520,9 @@ func (m *gameyeMatches) fail(userIds []string, reason string, err error) {
 	m.mu.Lock()
 	for _, userId := range userIds {
 		delete(m.starting, userId)
+	}
+	if reason != reasonBusy {
+		m.inFlight--
 	}
 	m.mu.Unlock()
 
@@ -431,12 +544,22 @@ func (m *gameyeMatches) fail(userIds []string, reason string, err error) {
 	}
 }
 
-// forgetExpired drops assignments whose tokens are spent. Call with mu held.
+// soloForgetAfter is when a solo session is surely over (well past the
+// game server's own limit and the session TTL): its record goes.
+const soloForgetAfter = time.Hour
+
+// forgetExpired drops assignments whose tokens are spent, and solo records
+// of sessions long over. Call with mu held.
 func (m *gameyeMatches) forgetExpired() {
 	now := m.now()
 	for userId, a := range m.assigned {
 		if now.After(a.exp) {
 			delete(m.assigned, userId)
+		}
+	}
+	for userId, s := range m.solo {
+		if now.Sub(s.at) > soloForgetAfter {
+			delete(m.solo, userId)
 		}
 	}
 }

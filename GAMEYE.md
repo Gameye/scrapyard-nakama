@@ -216,6 +216,7 @@ Gameye echoes container env back in a session's labels. The Fleet Manager strips
 | `GAMEYE_API_URL` | no | `https://api.sandbox-gameye.gameye.net` | |
 | `GAMEYE_API_TTL` | no | `30m` | Gameye stops the session after this |
 | `GAMEYE_API_PORT` | no | `7360/tcp` | |
+| `GAMEYE_MAX_SESSIONS` | no | `4` | Most sessions live at Gameye or starting; a start past it is refused as `busy`. `0` is no cap |
 
 They are secrets: pass them as `--runtime.env KEY=value` flags, as environment variables to the image built from [`nakama/Dockerfile`](nakama/Dockerfile), or in a second, uncommitted config file. Never put them in `nakama/data/config.yml`. More in [`nakama/AGENTS.md`](nakama/AGENTS.md).
 
@@ -320,7 +321,7 @@ The relay deploys on its own with Wrangler; the commands are at the top of [`edg
 - **Players are split by region.** Nobody is matched across regions, so with few players online more matches start with bots.
 - **Picking a region matches you with everyone in it, at whatever latency you have to it.** A pick wins over the estimates for the whole match, so the players who queued there as their nearest play on your pick's server too.
 - **No backfill or rejoin.** A match is the players matched at the start, plus bots. A player whose socket drops can't get back into the match, and nobody new joins a running one.
-- **No spend caps.** Spending is bounded only by each session ending itself (after the match, when idle, or after 20 minutes) and by Gameye's TTL (30 minutes by default). There is no cap on concurrent sessions and no per-player rate limit.
+- **Session limits, not a spend cap.** The plugin starts no session past `GAMEYE_MAX_SESSIONS` (4 by default, one under the self-serve sandbox's 5 containers), counted from Gameye's live sessions for the image and tag plus the starts in flight; a failed count lets the start through. A player has one solo session at a time: a new search stops the last one, and a solo call within 30 seconds of the last solo match is answered busy. Many guest accounts can still fill the cap, which then refuses everyone until sessions end (after the match, when idle, after 20 minutes, or at Gameye's TTL, 30 minutes by default). There is no euro budget.
 - **sslip.io in the relay.** Cloudflare Workers can't fetch a bare IP, so the relay turns the container's IP into a hostname under `sslip.io`, a public wildcard DNS service. Set `GAMEYE_IPV4_DNS_SUFFIX` to use your own wildcard zone.
 - **Plaintext between the relay and the container.** The browser-to-relay hop is TLS. The relay-to-container hop is a plain `ws://` socket over the internet.
 - **Logging out of Nakama doesn't revoke a seat.** A seat token stays good until it expires, 120 seconds after it was issued.

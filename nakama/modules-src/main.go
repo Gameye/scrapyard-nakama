@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,8 +20,8 @@ import (
 )
 
 // Nakama runtime.env keys. The GAMEYE_API_* names are the fleet manager's
-// own; RELAY_SECRET is shared with the relay. TTL, PORT, URL and REGIONS
-// may be left out.
+// own; RELAY_SECRET is shared with the relay. TTL, PORT, URL, REGIONS and
+// MAX_SESSIONS may be left out.
 const (
 	envUrl          = "GAMEYE_API_URL"
 	envToken        = "GAMEYE_API_TOKEN"
@@ -32,6 +33,7 @@ const (
 	envPort         = "GAMEYE_API_PORT"
 	envRelaySecret  = "RELAY_SECRET"
 	envRelayUrl     = "RELAY_URL"
+	envMaxSessions  = "GAMEYE_MAX_SESSIONS"
 )
 
 const (
@@ -45,6 +47,11 @@ const (
 	// createTimeout bounds a session start, so a player who waits hears of a
 	// failure well within the page's 60 s search.
 	createTimeout = 20 * time.Second
+
+	// defaultMaxSessions caps sessions live or starting: one under the
+	// self-serve sandbox's 5 containers, so the cap answers before Gameye's
+	// 429 does.
+	defaultMaxSessions = 4
 )
 
 type config struct {
@@ -54,6 +61,8 @@ type config struct {
 	// regions are the enabled Gameye regions, the fallback (fleet.Region)
 	// among them.
 	regions []string
+	// maxSessions: 0 is no cap.
+	maxSessions int
 }
 
 // readConfig reads the plugin's runtime.env. Its errors name keys, never
@@ -71,6 +80,14 @@ func readConfig(env map[string]string) (config, error) {
 	regions, err := readRegions(env[envRegions], env[envRegion])
 	if err != nil {
 		problems = append(problems, err)
+	}
+	maxSessions := defaultMaxSessions
+	if v := env[envMaxSessions]; v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			problems = append(problems, fmt.Errorf("runtime env %v must be a whole number, 0 for no cap", envMaxSessions))
+		}
+		maxSessions = n
 	}
 	if err := errors.Join(problems...); err != nil {
 		return config{}, err
@@ -94,6 +111,7 @@ func readConfig(env map[string]string) (config, error) {
 		relaySecret: []byte(env[envRelaySecret]),
 		relayUrl:    env[envRelayUrl],
 		regions:     regions,
+		maxSessions: maxSessions,
 	}, nil
 }
 
@@ -146,7 +164,7 @@ func InitModule(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runti
 		return err
 	}
 
-	matches := newGameyeMatches(fm, nk, logger, cfg.relaySecret, cfg.relayUrl, cfg.regions, cfg.fleet.Region)
+	matches := newGameyeMatches(fm, nk, logger, cfg.relaySecret, cfg.relayUrl, cfg.regions, cfg.fleet.Region, cfg.maxSessions)
 	if err := initializer.RegisterMatchmakerMatched(matches.matched); err != nil {
 		return err
 	}

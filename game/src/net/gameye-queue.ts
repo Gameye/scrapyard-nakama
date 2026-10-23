@@ -59,6 +59,7 @@ export const PLAYERS = { min: 2, max: 8 }
 export const MESSAGES = {
   unavailable: 'The Gameye demo is unavailable right now — try again later', // quota_exceeded, misconfigured
   unreachable: 'Couldn’t reach the match server — try again', // no session in time, no capacity, Gameye down, the relay or container unreachable
+  busy: 'The demo is full right now — try again in a minute', // busy: the plugin's session cap or the solo cooldown
   solo: 'Nobody else yet — starting a match with bots',
   cancelled: 'Search cancelled',
 }
@@ -159,7 +160,8 @@ export function readMatch(content: unknown): GameyeMatch | null {
   return texts && Number.isFinite(m.exp) ? (m as unknown as GameyeMatch) : null
 }
 
-export const failureMessage = (reason: unknown) => (typeof reason === 'string' && UNAVAILABLE.has(reason) ? MESSAGES.unavailable : MESSAGES.unreachable)
+export const failureMessage = (reason: unknown) =>
+  reason === 'busy' ? MESSAGES.busy : typeof reason === 'string' && UNAVAILABLE.has(reason) ? MESSAGES.unavailable : MESSAGES.unreachable
 
 type Stage = 'idle' | 'waiting' | 'searching' | 'connecting' | 'seated' // waiting: for the Nakama socket
 
@@ -357,6 +359,10 @@ export function createGameyeQueue(deps: QueueDeps) {
       reply = JSON.parse((await on.rpc(SOLO_RPC, soloPayload(resume, await geo, picked ? region : ''))).payload || '{}')
     } catch {
       if (live(mine) && socket === on) fail(MESSAGES.unreachable)
+      return
+    }
+    if (reply?.status === 'busy') {
+      if (live(mine) && socket === on) fail(MESSAGES.busy)
       return
     }
     const m = reply?.status === 'matched' ? readMatch(reply.match) : null
