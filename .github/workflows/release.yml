@@ -115,6 +115,16 @@ jobs:
             org.opencontainers.image.created=${{ steps.names.outputs.created }}
             org.opencontainers.image.licenses=MIT
 
+  dockerhub:
+    # the Gameye demo pulls the game server from Docker Hub (mirror-dockerhub.yml says why)
+    needs: images
+    uses: ./.github/workflows/mirror-dockerhub.yml
+    permissions:
+      contents: read
+    with:
+      tag: sha-${{ github.sha }}
+    secrets: inherit
+
   site:
     # after the images: release.json names them, so it's uploaded only once both are pushed
     needs: [ci, images]

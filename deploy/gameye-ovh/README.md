@@ -64,7 +64,11 @@ cd game && VITE_MATCHMAKER=gameye VITE_NAKAMA_HOST=scrapyard-api.gameye.com \
 
 `NAKAMA_SERVER_KEY` is the client key: it ships in the page by design.
 
-A new game server image: push it, register the tag in Gameye (it must exist in
+A new game server image: the demo's Gameye application pulls it from Docker
+Hub (`gameyeplatform/scrapyard-nakama-dev`; Gameye takes GHCR images only from
+an owner named like the organization), and release.yml copies each release's
+there through `mirror-dockerhub.yml` (start it by hand for an older tag). Then
+register the tag in Gameye (it must exist in
 every region in `GAMEYE_API_REGIONS`: `scripts/gameye-up.sh` with
 `GAMEYE_REGIONS` waits for all of them), set
 `GAMEYE_API_IMAGE_VERSION` in `nakama.env`, restart Nakama, and rebuild the

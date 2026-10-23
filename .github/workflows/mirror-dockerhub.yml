@@ -1,0 +1,53 @@
+# Copies a published game server image, ghcr.io/<owner>/scrapyard-nakama:<tag>,
+# to Docker Hub as <DOCKERHUB_IMAGE>:<tag>. The Gameye demo's application pulls
+# from Docker Hub: Gameye's GHCR integration takes only images whose GitHub owner
+# is the Gameye organization's name, and this one's isn't. release.yml calls it
+# after the images are pushed; started by hand it copies a tag already on GHCR
+# (a release from before this workflow, or a retry).
+#
+# Repository settings it needs (without them it is skipped):
+#   variables: DOCKERHUB_IMAGE (e.g. gameyeplatform/scrapyard-nakama-dev), DOCKERHUB_USERNAME
+#   secrets:   DOCKERHUB_TOKEN (a Docker Hub access token with write access to that repository)
+name: mirror to Docker Hub
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The image tag on GHCR, sha-<40-hex commit>
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  mirror:
+    if: vars.DOCKERHUB_IMAGE != '' && vars.DOCKERHUB_USERNAME != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ inputs.tag }}
+      DEST: ${{ vars.DOCKERHUB_IMAGE }}
+    steps:
+      # the tag goes into image references: only release.yml's own form
+      - name: Check the tag
+        run: |
+          [[ $TAG =~ ^sha-[0-9a-f]{40}$ ]] || { echo "::error::tag must be sha-<40 hex digits>, got: $TAG"; exit 1; }
+          owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          echo "SRC=ghcr.io/$owner/scrapyard-nakama:$TAG" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      # registry to registry, layers and all: nothing is rebuilt, so it is the image GHCR holds
+      - name: Copy
+        run: |
+          docker buildx imagetools create --tag "docker.io/$DEST:$TAG" "$SRC"
+          docker buildx imagetools inspect "docker.io/$DEST:$TAG" --format '{{json .Manifest.Digest}}'
