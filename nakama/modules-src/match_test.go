@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,6 +39,39 @@ type fakeFleet struct {
 	outcomes []outcome
 	// hold, when set, keeps every callback waiting until it is closed.
 	hold chan struct{}
+	// live are the statuses List reports, one session each; listErr fails it.
+	live    []string
+	listErr error
+}
+
+func (f *fakeFleet) List(_ context.Context, _ string, _ int, _ string) ([]*runtime.InstanceInfo, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, "", f.listErr
+	}
+	var list []*runtime.InstanceInfo
+	for i, status := range f.live {
+		list = append(list, &runtime.InstanceInfo{Id: fmt.Sprintf("live-%d", i), Status: status})
+	}
+	return list, "", nil
+}
+
+// waitDeletes waits for the sessions stopped off the caller's path.
+func (f *fakeFleet) waitDeletes(t *testing.T, want ...string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		got := f.deleteCalls()
+		slices.Sort(got)
+		if slices.Equal(got, want) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("deleted %v, want %v", got, want)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func (f *fakeFleet) Create(_ context.Context, _ int, userIds []string, latencies []runtime.FleetUserLatencies, metadata map[string]any, callback runtime.FmCreateCallbackFn) (map[string]string, error) {
@@ -194,8 +230,9 @@ func (c *testClock) set(d time.Duration) { c.offset.Store(int64(d)) }
 
 func newTestMatches(fleet *fakeFleet, nk *fakeNk) (*gameyeMatches, *fakeLogger) {
 	logger := &fakeLogger{}
-	m := newGameyeMatches(fleet, nk, logger, testRelaySecret, testRelayUrl, testRegions, "eu-central-1")
+	m := newGameyeMatches(fleet, nk, logger, testRelaySecret, testRelayUrl, testRegions, "eu-central-1", 0)
 	m.now = func() time.Time { return testIssued }
+	m.cooldown = 0
 	m.backoff = []time.Duration{time.Millisecond, 2 * time.Millisecond}
 	return m, logger
 }
@@ -512,7 +549,7 @@ func TestSoloMatchResumeReturnsTheLiveAssignmentOnce(t *testing.T) {
 
 // A player who used their match (or left it) and searches again gets a new
 // session, not the old one, though its tokens are still good.
-func TestFreshSoloMatchAfterAnAssignmentStartsANewSession(t *testing.T) {
+func TestFreshSoloMatchStopsTheLastAndStartsANewSession(t *testing.T) {
 	fleet, nk := &fakeFleet{}, newFakeNk()
 	m, logger := newTestMatches(fleet, nk)
 
@@ -532,12 +569,129 @@ func TestFreshSoloMatchAfterAnAssignmentStartsANewSession(t *testing.T) {
 	if calls := fleet.createCalls(); len(calls) != 3 {
 		t.Errorf("%d Create calls, want 3", len(calls))
 	}
+	// Each fresh call stopped the session before it: one live session a player.
+	fleet.waitDeletes(t, "session-1", "session-2")
 
 	// The fresh call dropped the old assignment: a resume now gets the newest.
 	reply, _ := m.soloMatch(soloCtx("user-a"), logger, nil, nk, soloResume)
 	if !strings.Contains(reply, `"session_id":"session-3"`) {
 		t.Errorf("resume = %s, want session-3", reply)
 	}
+}
+
+func TestSoloMatchWithinTheCooldownIsBusy(t *testing.T) {
+	fleet, nk := &fakeFleet{}, newFakeNk()
+	m, logger := newTestMatches(fleet, nk)
+	clock := &testClock{}
+	m.now = clock.now
+	m.cooldown = soloCooldown
+
+	_, _ = m.soloMatch(soloCtx("user-a"), logger, nil, nk, "")
+	nk.next(t)
+
+	clock.set(soloCooldown - time.Second)
+	reply, err := m.soloMatch(soloCtx("user-a"), logger, nil, nk, "")
+	if err != nil || reply != `{"status":"busy"}` {
+		t.Fatalf("within the cooldown = (%s, %v), want busy", reply, err)
+	}
+	nk.none(t)
+	if calls := fleet.createCalls(); len(calls) != 1 {
+		t.Errorf("%d Create calls, want 1: the busy call starts nothing", len(calls))
+	}
+	if deletes := fleet.deleteCalls(); len(deletes) != 0 {
+		t.Errorf("deleted %v: the busy call stops nothing", deletes)
+	}
+
+	// Another player isn't held up by this one's cooldown.
+	if reply, _ := m.soloMatch(soloCtx("user-b"), logger, nil, nk, ""); reply != `{"status":"starting"}` {
+		t.Errorf("another player = %s, want starting", reply)
+	}
+	nk.next(t)
+
+	clock.set(soloCooldown)
+	if reply, _ := m.soloMatch(soloCtx("user-a"), logger, nil, nk, ""); reply != `{"status":"starting"}` {
+		t.Errorf("after the cooldown = %s, want starting", reply)
+	}
+	nk.next(t)
+	fleet.waitDeletes(t, "session-1")
+}
+
+func TestSessionCapRefusesAStartAsBusy(t *testing.T) {
+	fleet, nk := &fakeFleet{live: []string{"running", "draining", "exited", "dead"}}, newFakeNk()
+	m, logger := newTestMatches(fleet, nk)
+	m.maxSessions = 2
+
+	reply, err := m.soloMatch(soloCtx("user-a"), logger, nil, nk, "")
+	if err != nil || reply != `{"status":"starting"}` {
+		t.Fatalf("reply = (%s, %v), want starting", reply, err)
+	}
+	if n := nk.next(t); n.Subject != "gameye_failed" || n.Content["reason"] != "busy" {
+		t.Errorf("notification = %v %v, want gameye_failed busy", n.Subject, n.Content["reason"])
+	}
+	if calls := fleet.createCalls(); len(calls) != 0 {
+		t.Errorf("%d Create calls, want 0", len(calls))
+	}
+
+	// Ended sessions don't count: one live of two, so a start goes ahead,
+	// and the refused player may try again at once.
+	fleet.mu.Lock()
+	fleet.live = []string{"running", "exited"}
+	fleet.mu.Unlock()
+	if reply, _ := m.soloMatch(soloCtx("user-a"), logger, nil, nk, ""); reply != `{"status":"starting"}` {
+		t.Errorf("reply = %s, want starting", reply)
+	}
+	if n := nk.next(t); n.Subject != "gameye_match" {
+		t.Errorf("notification = %v, want gameye_match", n.Subject)
+	}
+}
+
+func TestSessionCapCountsStartsInFlight(t *testing.T) {
+	fleet, nk := &fakeFleet{hold: make(chan struct{})}, newFakeNk()
+	m, logger := newTestMatches(fleet, nk)
+	m.maxSessions = 1
+
+	_, _ = m.soloMatch(soloCtx("user-a"), logger, nil, nk, "")
+	_, _ = m.matched(context.Background(), logger, nil, nk, []runtime.MatchmakerEntry{gameyeEntry("user-b"), gameyeEntry("user-c")})
+	for range 2 {
+		if n := nk.next(t); n.Subject != "gameye_failed" || n.Content["reason"] != "busy" {
+			t.Errorf("notification = %v %v to %v, want gameye_failed busy", n.Subject, n.Content["reason"], n.UserID)
+		}
+	}
+	close(fleet.hold)
+	if n := nk.next(t); n.UserID != "user-a" || n.Subject != "gameye_match" {
+		t.Errorf("notification = %v to %v, want gameye_match to user-a", n.Subject, n.UserID)
+	}
+	if calls := fleet.createCalls(); len(calls) != 1 {
+		t.Errorf("%d Create calls, want 1", len(calls))
+	}
+}
+
+func TestSessionCapAdmitsWhenTheCountFails(t *testing.T) {
+	fleet, nk := &fakeFleet{listErr: errors.New("gameye down")}, newFakeNk()
+	m, logger := newTestMatches(fleet, nk)
+	m.maxSessions = 1
+
+	_, _ = m.soloMatch(soloCtx("user-a"), logger, nil, nk, "")
+	if n := nk.next(t); n.Subject != "gameye_match" {
+		t.Errorf("notification = %v, want gameye_match", n.Subject)
+	}
+}
+
+func TestMatchedStopsAPlayersLastSoloSession(t *testing.T) {
+	fleet, nk := &fakeFleet{}, newFakeNk()
+	m, logger := newTestMatches(fleet, nk)
+
+	_, _ = m.soloMatch(soloCtx("user-a"), logger, nil, nk, "")
+	nk.next(t)
+	_, _ = m.matched(context.Background(), logger, nil, nk, []runtime.MatchmakerEntry{gameyeEntry("user-a"), gameyeEntry("user-b")})
+	nk.next(t)
+	nk.next(t)
+	fleet.waitDeletes(t, "session-1")
+
+	// A matchmaker session isn't a solo one: a later solo call stops nothing.
+	_, _ = m.soloMatch(soloCtx("user-b"), logger, nil, nk, "")
+	nk.next(t)
+	fleet.waitDeletes(t, "session-1")
 }
 
 func TestSoloMatchRefusesAPayloadItCantRead(t *testing.T) {
@@ -635,6 +789,16 @@ func TestReadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("valid env: %v", err)
 	}
+	if cfg.maxSessions != 4 {
+		t.Errorf("max sessions = %d, want the default 4", cfg.maxSessions)
+	}
+	for value, want := range map[string]int{"0": 0, "12": 12} {
+		env := maps.Clone(valid)
+		env["GAMEYE_MAX_SESSIONS"] = value
+		if cfg, err := readConfig(env); err != nil || cfg.maxSessions != want {
+			t.Errorf("GAMEYE_MAX_SESSIONS=%v: (%d, %v), want %d", value, cfg.maxSessions, err, want)
+		}
+	}
 	if cfg.fleet.Port != "7360/tcp" {
 		t.Errorf("port = %q, want the default 7360/tcp", cfg.fleet.Port)
 	}
@@ -643,9 +807,10 @@ func TestReadConfig(t *testing.T) {
 	}
 
 	for key, value := range map[string]string{
-		"GAMEYE_API_TOKEN": "",
-		"RELAY_SECRET":     strings.Repeat("r", 31),
-		"RELAY_URL":        "",
+		"GAMEYE_API_TOKEN":    "",
+		"RELAY_SECRET":        strings.Repeat("r", 31),
+		"RELAY_URL":           "",
+		"GAMEYE_MAX_SESSIONS": "-1",
 	} {
 		env := map[string]string{}
 		for k, v := range valid {

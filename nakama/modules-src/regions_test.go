@@ -181,7 +181,7 @@ func TestRegionRpc(t *testing.T) {
 func TestRegionRpcListsTheEnabledRegionsInOrder(t *testing.T) {
 	fleet, nk := &fakeFleet{}, newFakeNk()
 	logger := &fakeLogger{}
-	m := newGameyeMatches(fleet, nk, logger, testRelaySecret, testRelayUrl, []string{"us-east-1", "eu-central-1"}, "us-east-1")
+	m := newGameyeMatches(fleet, nk, logger, testRelaySecret, testRelayUrl, []string{"us-east-1", "eu-central-1"}, "us-east-1", 0)
 	m.now = func() time.Time { return testIssued }
 	reply, err := m.region(soloCtx("user-a"), logger, nil, nk, `{"region":"ap-southeast-1"}`)
 	if want := `{"region":"us-east-1","regions":["us-east-1","eu-central-1"]}`; err != nil || reply != want {
